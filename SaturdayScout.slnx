@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SaturdayScout.Api/SaturdayScout.Api.csproj" />
+    <Project Path="src/SaturdayScout.Application/SaturdayScout.Application.csproj" />
+    <Project Path="src/SaturdayScout.Domain/SaturdayScout.Domain.csproj" />
+    <Project Path="src/SaturdayScout.Infrastructure/SaturdayScout.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SaturdayScout.Domain.Tests/SaturdayScout.Domain.Tests.csproj" />
+  </Folder>
+</Solution>
