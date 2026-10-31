@@ -1,6 +1,6 @@
 # Saturday Scout — Backend Implementation Plan
 
-**Status:** Ready for Codex execution  
+**Status:** Phases 1–3 implemented; Phase 3 awaiting review
 **Scope:** MVP backend, starting at Step 2 (domain model)  
 **Stack:** .NET 10, ASP.NET Core, EF Core 10, PostgreSQL 17, xUnit, Docker Compose  
 **Repository:** Existing `saturday-scout` repository  
@@ -169,6 +169,8 @@ dotnet test
 ---
 
 ## Phase 3 — Application services and REST API
+
+**Implementation status (2026-10-31):** Complete, pending review. The application contract, PostgreSQL-backed services, Development-only fake identity, production deny scheme, `/api/v1` routes, and integration tests are in place. The internal result service has no HTTP route. See `docs/api-v1.md` for requests, responses, and limits. Remaining work in later phases: provider ingestion, real authentication, automated slate-status advancement, audited scoring/finalization, and a formal leaderboard tie policy.
 
 ### Application use cases
 

@@ -6,6 +6,7 @@
     <Project Path="src/SaturdayScout.Infrastructure/SaturdayScout.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/SaturdayScout.Api.IntegrationTests/SaturdayScout.Api.IntegrationTests.csproj" />
     <Project Path="tests/SaturdayScout.Domain.Tests/SaturdayScout.Domain.Tests.csproj" />
     <Project Path="tests/SaturdayScout.Infrastructure.Tests/SaturdayScout.Infrastructure.Tests.csproj" />
   </Folder>
