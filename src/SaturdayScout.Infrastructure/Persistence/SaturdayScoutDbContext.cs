@@ -14,6 +14,7 @@ public sealed class SaturdayScoutDbContext(DbContextOptions<SaturdayScoutDbConte
     public DbSet<SlateGame> SlateGames => Set<SlateGame>();
     public DbSet<PickSheet> PickSheets => Set<PickSheet>();
     public DbSet<Pick> Picks => Set<Pick>();
+    public DbSet<ProviderRequestUsage> ProviderRequestUsages => Set<ProviderRequestUsage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -38,6 +39,8 @@ public sealed class SaturdayScoutDbContext(DbContextOptions<SaturdayScoutDbConte
             b.Property(x => x.Provider).HasMaxLength(100);
             b.Property(x => x.ExternalId).HasMaxLength(200);
             b.Property(x => x.KickoffUtc).HasColumnType("timestamp with time zone");
+            b.Property(x => x.SourceStatus).HasMaxLength(64);
+            b.Property(x => x.SourceRetrievedUtc).HasColumnType("timestamp with time zone");
             b.HasIndex(x => new { x.Provider, x.ExternalId }).IsUnique();
             b.HasIndex(x => new { x.Sport, x.Season, x.Week });
             b.HasIndex(x => x.KickoffUtc);
@@ -118,6 +121,17 @@ public sealed class SaturdayScoutDbContext(DbContextOptions<SaturdayScoutDbConte
             b.HasIndex(x => new { x.SheetId, x.ConfidenceRank }).IsUnique();
             b.HasOne<Game>().WithMany().HasForeignKey(x => x.GameId).OnDelete(DeleteBehavior.Restrict);
             b.HasOne<Team>().WithMany().HasForeignKey(x => x.SelectedTeamId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ProviderRequestUsage>(b =>
+        {
+            b.ToTable("ProviderRequestUsages");
+            b.HasKey(x => x.Id);
+            b.Property(x => x.Provider).HasMaxLength(100);
+            b.Property(x => x.Endpoint).HasMaxLength(120);
+            b.Property(x => x.RequestedUtc).HasColumnType("timestamp with time zone");
+            b.Property(x => x.Outcome).HasMaxLength(24);
+            b.HasIndex(x => new { x.Provider, x.RequestedUtc });
         });
     }
 }

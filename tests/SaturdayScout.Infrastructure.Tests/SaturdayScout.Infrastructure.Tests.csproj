@@ -15,4 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/SaturdayScout.Infrastructure/SaturdayScout.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

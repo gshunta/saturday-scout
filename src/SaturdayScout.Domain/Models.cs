@@ -10,8 +10,8 @@ public sealed class Team
 {
     public Guid Id { get; }
     public Sport Sport { get; }
-    public string Name { get; }
-    public string Abbreviation { get; }
+    public string Name { get; private set; }
+    public string Abbreviation { get; private set; }
     public string Provider { get; }
     public string ExternalId { get; }
 
@@ -25,6 +25,12 @@ public sealed class Team
         Abbreviation = DomainGuard.Text(abbreviation);
         Provider = DomainGuard.Text(provider);
         ExternalId = DomainGuard.Text(externalId);
+    }
+
+    public void UpdateDetails(string name, string abbreviation)
+    {
+        Name = DomainGuard.Text(name);
+        Abbreviation = DomainGuard.Text(abbreviation);
     }
 }
 
@@ -42,6 +48,8 @@ public sealed class Game
     public int? AwayScore { get; private set; }
     public string Provider { get; }
     public string ExternalId { get; }
+    public string? SourceStatus { get; private set; }
+    public DateTimeOffset? SourceRetrievedUtc { get; private set; }
 
     public Game(Guid id, Sport sport, int season, int week, Guid homeTeamId, Guid awayTeamId,
         DateTimeOffset kickoffUtc, string provider, string externalId)
@@ -90,6 +98,15 @@ public sealed class Game
         HomeScore = homeScore;
         AwayScore = awayScore;
         Status = GameStatus.Final;
+    }
+
+    public void RecordSource(string rawStatus, DateTimeOffset retrievedUtc)
+    {
+        DomainGuard.Utc(retrievedUtc);
+        if (SourceRetrievedUtc is not null && retrievedUtc < SourceRetrievedUtc)
+            throw new InvalidOperationException("Older source data cannot replace newer source metadata.");
+        SourceStatus = DomainGuard.Text(rawStatus);
+        SourceRetrievedUtc = retrievedUtc;
     }
 }
 

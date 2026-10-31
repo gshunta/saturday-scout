@@ -56,6 +56,13 @@ namespace SaturdayScout.Infrastructure.Persistence.Migrations
                     b.Property<int>("Season")
                         .HasColumnType("integer");
 
+                    b.Property<DateTimeOffset?>("SourceRetrievedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SourceStatus")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("Sport")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -331,6 +338,43 @@ namespace SaturdayScout.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("WeeklySlates", (string)null);
+                });
+
+            modelBuilder.Entity("SaturdayScout.Infrastructure.Persistence.ProviderRequestUsage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Endpoint")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<int?>("HttpStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int?>("RemainingReported")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("RequestedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Provider", "RequestedUtc");
+
+                    b.ToTable("ProviderRequestUsages", (string)null);
                 });
 
             modelBuilder.Entity("SaturdayScout.Domain.Game", b =>

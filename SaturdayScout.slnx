@@ -3,6 +3,7 @@
     <Project Path="src/SaturdayScout.Api/SaturdayScout.Api.csproj" />
     <Project Path="src/SaturdayScout.Application/SaturdayScout.Application.csproj" />
     <Project Path="src/SaturdayScout.Domain/SaturdayScout.Domain.csproj" />
+    <Project Path="src/SaturdayScout.Import/SaturdayScout.Import.csproj" />
     <Project Path="src/SaturdayScout.Infrastructure/SaturdayScout.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">

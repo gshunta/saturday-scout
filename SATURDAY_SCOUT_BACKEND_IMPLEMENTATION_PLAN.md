@@ -1,6 +1,6 @@
 # Saturday Scout — Backend Implementation Plan
 
-**Status:** Phases 1–3 implemented; Phase 3 awaiting review
+**Status:** Phases 1–4 implemented; Phase 4 awaiting review
 **Scope:** MVP backend, starting at Step 2 (domain model)  
 **Stack:** .NET 10, ASP.NET Core, EF Core 10, PostgreSQL 17, xUnit, Docker Compose  
 **Repository:** Existing `saturday-scout` repository  
@@ -224,6 +224,8 @@ dotnet run --project src/SaturdayScout.Api
 ---
 
 ## Phase 4 — CollegeFootballData ingestion
+
+**Implementation status (2026-10-31):** Complete, pending review. The operator-only CLI imports regular-season college football through provider-neutral application contracts and a CFBD-specific Infrastructure adapter. A narrow migration adds game source trace fields and a durable provider request usage ledger. Imports are transactional and idempotent, preserve local IDs, report skipped records, and protect final results. Fixture parser and PostgreSQL integration tests pass. Live authenticated CFBD calls and imports have not been run and require separate explicit approval. See `docs/data-sources.md` for attribution, terms, budget controls, configuration, and commands. The approved operator CLI replaces the originally proposed commissioner/admin HTTP trigger; game browsing continues to require league membership. Remaining limitations: the provider's actual account tier and shared remaining quota must be confirmed by the operator; unsupported provider statuses are skipped; final score conflicts need manual review.
 
 ### Provider contract
 
