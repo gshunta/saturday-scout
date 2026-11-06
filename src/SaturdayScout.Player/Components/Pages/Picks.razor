@@ -1,0 +1,15 @@
+@page "/"
+@attribute [Authorize(Policy = "Player")]
+@rendermode InteractiveServer
+
+<PageTitle>Picks · Saturday Scout</PageTitle>
+<section class="welcome-card" aria-labelledby="page-title">
+    <p class="eyebrow">College football</p>
+    <h1 id="page-title">Your picks</h1>
+    <p class="muted">Sign-in and league selection will be available in the next milestone.</p>
+    <div class="empty-card" role="status">
+        <span class="empty-icon" aria-hidden="true">🏈</span>
+        <h2>No slate selected</h2>
+        <p>Your available weekly slate and picks will appear here.</p>
+    </div>
+</section>

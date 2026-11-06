@@ -1,0 +1,13 @@
+@page "/profile"
+@attribute [Authorize(Policy = "Player")]
+
+<PageTitle>Profile · Saturday Scout</PageTitle>
+<section class="page-card" aria-labelledby="page-title">
+    <p class="eyebrow">Account</p>
+    <h1 id="page-title">Profile</h1>
+    <p class="muted">Sign-in and account settings will be available in the next milestone.</p>
+    <form method="post" action="/auth/logout">
+        <AntiforgeryToken />
+        <button class="secondary-button" type="submit">Sign out</button>
+    </form>
+</section>

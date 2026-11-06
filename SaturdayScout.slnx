@@ -6,11 +6,13 @@
     <Project Path="src/SaturdayScout.Domain/SaturdayScout.Domain.csproj" />
     <Project Path="src/SaturdayScout.Import/SaturdayScout.Import.csproj" />
     <Project Path="src/SaturdayScout.Infrastructure/SaturdayScout.Infrastructure.csproj" />
+    <Project Path="src/SaturdayScout.Player/SaturdayScout.Player.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SaturdayScout.Admin.IntegrationTests/SaturdayScout.Admin.IntegrationTests.csproj" />
     <Project Path="tests/SaturdayScout.Api.IntegrationTests/SaturdayScout.Api.IntegrationTests.csproj" />
     <Project Path="tests/SaturdayScout.Domain.Tests/SaturdayScout.Domain.Tests.csproj" />
     <Project Path="tests/SaturdayScout.Infrastructure.Tests/SaturdayScout.Infrastructure.Tests.csproj" />
+    <Project Path="tests/SaturdayScout.Player.Tests/SaturdayScout.Player.Tests.csproj" />
   </Folder>
 </Solution>
