@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using SaturdayScout.Application;
 using SaturdayScout.Domain;
@@ -58,10 +57,9 @@ public sealed class ScoutStore(SaturdayScoutDbContext db) : IScoutStore
     {
         if (!await db.Users.AnyAsync(x => x.Id == actorId, ct)) throw Forbidden();
         var now = DateTimeOffset.UtcNow;
-        var league = new League(Guid.NewGuid(), request.Name, actorId,
-            Convert.ToHexString(SHA256.HashData(RandomNumberGenerator.GetBytes(32))), now.AddYears(1));
+        var (league, membership) = LeagueCreation.Create(request.Name, actorId, now);
         db.Leagues.Add(league);
-        db.LeagueMembers.Add(new LeagueMember(league.Id, actorId, MembershipRole.Commissioner, now));
+        db.LeagueMembers.Add(membership);
         await db.SaveChangesAsync(ct);
         return new LeagueDto(league.Id, league.Name, actorId);
     }

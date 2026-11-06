@@ -22,15 +22,7 @@ public sealed class DevAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> 
         var subject = Request.Headers["X-Dev-Subject"].ToString().Trim();
         if (subject.Length is < 1 or > 255) return AuthenticateResult.NoResult();
         var user = await db.Users.SingleOrDefaultAsync(x => x.ExternalSubjectId == subject, Context.RequestAborted);
-        if (user is null)
-        {
-            var displayName = Request.Headers["X-Dev-Name"].ToString().Trim();
-            if (displayName.Length is < 1 or > 120) displayName = subject;
-            if (displayName.Length > 120) displayName = displayName[..120];
-            user = new User(Guid.NewGuid(), displayName, subject);
-            db.Users.Add(user);
-            await db.SaveChangesAsync(Context.RequestAborted);
-        }
+        if (user is null) return AuthenticateResult.NoResult();
         var identity = new ClaimsIdentity([
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Name, user.DisplayName),
@@ -38,12 +30,6 @@ public sealed class DevAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> 
         ], Scheme.Name);
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name));
     }
-}
-
-public sealed class DenyAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger,
-    UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
-{
-    protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(AuthenticateResult.NoResult());
 }
 
 public sealed class ScoutExceptionHandler : IExceptionHandler

@@ -1,0 +1,6 @@
+<article class="metric-card"><p>@Label</p><strong>@Value</strong></article>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter] public int Value { get; set; }
+}

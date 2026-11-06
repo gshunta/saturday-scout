@@ -209,6 +209,27 @@ public sealed class WeeklySlate
         _games.AddRange(selected.Select((game, index) => new SlateGame(Id, game.Id, index + 1)));
     }
 
+    public void RandomizeGames(IEnumerable<Game> availableGames, Random? random = null)
+    {
+        if (Status != SlateStatus.Draft) throw new InvalidOperationException("Only a draft slate can change games.");
+        ArgumentNullException.ThrowIfNull(availableGames);
+        var candidates = availableGames
+            .Where(g => g is not null && g.Sport == Sport && g.Season == Season && g.Week == Week &&
+                g.Status is not (GameStatus.Final or GameStatus.Canceled or GameStatus.NoContest))
+            .DistinctBy(g => g.Id)
+            .ToList();
+        if (candidates.Count < 10)
+            throw new InvalidOperationException("At least 10 eligible games are required for random selection.");
+
+        random ??= Random.Shared;
+        for (var i = candidates.Count - 1; i > 0; i--)
+        {
+            var j = random.Next(i + 1);
+            (candidates[i], candidates[j]) = (candidates[j], candidates[i]);
+        }
+        ReplaceGames(candidates.Take(10));
+    }
+
     public void Publish(IReadOnlyCollection<Game> games, DateTimeOffset lockUtc, DateTimeOffset nowUtc)
     {
         if (Status != SlateStatus.Draft) throw new InvalidOperationException("Only a draft slate can be published.");

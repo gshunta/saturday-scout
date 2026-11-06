@@ -2,7 +2,7 @@
 
 Set `SATURDAY_SCOUT_DB_CONNECTION` as described in [database.md](database.md), apply migrations, and start the API with `dotnet run --project src/SaturdayScout.Api`. The Development OpenAPI document is `/openapi/v1.json`.
 
-In Development, send `X-Dev-Subject: commissioner` to act as a local user. The handler creates a local user on first use. Send a different subject to act as another user. This handler is registered only in Development; Production rejects these headers and all `/api/v1` requests until real authentication is added.
+In Development, send `X-Dev-Subject: commissioner` to act as a local user. The handler creates a local user on first use. Send a different subject to act as another user. This handler is registered only in Development; Production rejects these headers. Member routes require league membership, and administrator routes require the Identity cookie, SystemAdministrator role, and completed MFA.
 
 | Method | Route | Access | Purpose |
 |---|---|---|---|
@@ -18,6 +18,22 @@ In Development, send `X-Dev-Subject: commissioner` to act as a local user. The h
 | POST | `/api/v1/slates/{slateId}/submit` | Member | Submit own complete sheet before lock |
 | GET | `/api/v1/slates/{slateId}/picks/me` | Member | Read own sheet |
 | GET | `/api/v1/leagues/{leagueId}/leaderboard?scope=nfl&season=2026&week=8` | Member | Read calculated standings; omit week for season |
+| GET | `/api/v1/auth/antiforgery` | Authenticated | Issue request token and cookie for cookie-authenticated API mutations |
+| GET | `/api/v1/admin/dashboard` | SystemAdministrator + MFA | Imported counts, slate counts, latest game source timestamp, upcoming CFB games |
+| GET | `/api/v1/admin/games?season=2026&week=8&search=State&status=Scheduled&page=1&pageSize=25` | SystemAdministrator + MFA | Filtered, paginated college football games and teams |
+| GET | `/api/v1/admin/leagues` | SystemAdministrator + MFA | Leagues available for league-specific slates |
+| GET | `/api/v1/admin/slates` | SystemAdministrator + MFA | College football slate summaries |
+| POST | `/api/v1/admin/slates` | SystemAdministrator + MFA + antiforgery | Create empty draft for league, season, and week |
+| GET | `/api/v1/admin/slates/{slateId}` | SystemAdministrator + MFA | Read slate and ordered games |
+| PUT | `/api/v1/admin/slates/{slateId}/games` | SystemAdministrator + MFA + antiforgery | Save 0–10 eligible draft games and order with expected version |
+| POST | `/api/v1/admin/slates/{slateId}/randomize` | SystemAdministrator + MFA + antiforgery | Randomly select and save ten eligible games with expected version |
+| POST | `/api/v1/admin/slates/{slateId}/publish` | SystemAdministrator + MFA + antiforgery | Publish ten eligible games with UTC lock time and expected version |
+
+The Admin Blazor server executes the shared application service in-process after reauthorizing the current circuit principal against the MFA-backed administrator policy for every operation. It does not forward a browser cookie to a separately hosted API. Direct API access uses the shared Identity cookie and independent API authorization; cookie-authenticated mutations require `X-CSRF-TOKEN` from `/api/v1/auth/antiforgery`. Put the portal and API behind a common-origin gateway before using browser-to-API calls.
+
+The admin game browser is college-only. Team search matches names and abbreviations. Conference filtering is unavailable because the current Team schema has no conference field. Kickoffs are stored and displayed in UTC. Game queries are server-filtered and paginated (maximum 100 per page).
+
+Admin slates follow the existing domain relationship and are unique per league, sport, season, and week. A draft may contain 0–10 unique eligible games; publication requires exactly ten matching, eligible games. Random selection samples across all eligible games for the slate week, not only the current browser page. Updates and publication use PostgreSQL `xmin` as an optimistic concurrency token without adding a table or column. Lock time must be UTC, in the future, and no later than the earliest selected kickoff. Published slates are read-only, and slates with submitted sheets cannot be mutated. The existing commissioner routes and request contracts remain unchanged.
 
 `sport` is `college` or `nfl`; leaderboard `scope` also accepts `combined`. Games paging starts at 1 and is capped at 100 per page. All times include a UTC offset of zero. A successful pick replacement returns a new `version`; clients must send that version on later replacements and submission. Sending an old or missing version for an existing sheet returns 409. Pick writes use PostgreSQL row locking, optimistic concurrency, and the database clock at save and commit.
 
@@ -60,6 +76,18 @@ Drafts may have fewer than ten picks. A full submission requires one valid pick 
 ```json
 POST /api/v1/slates/22222222-2222-2222-2222-222222222222/submit
 {"expectedVersion":1}
+```
+
+Administrator random selection and publication use versioned requests. Randomization replaces and saves the draft's ordered game selection; publication uses the same domain lock-time and eligibility validation as the commissioner workflow:
+
+```json
+POST /api/v1/admin/slates/22222222-2222-2222-2222-222222222222/randomize
+{"expectedVersion":75231}
+```
+
+```json
+POST /api/v1/admin/slates/22222222-2222-2222-2222-222222222222/publish
+{"lockUtc":"2026-11-07T16:00:00Z","expectedVersion":75232}
 ```
 
 ## Example responses

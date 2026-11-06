@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using SaturdayScout.Application;
 using SaturdayScout.Domain;
+using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 using Xunit;
 
@@ -14,6 +17,41 @@ namespace SaturdayScout.Api.IntegrationTests;
 
 public sealed class ApiFlowTests
 {
+    [Fact]
+    public async Task AdministratorPolicyRequiresRoleAndMfa()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+        });
+        using var scope = factory.Services.CreateScope();
+        var authorizer = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
+        var roleOnly = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "SystemAdministrator")
+        ], "test"));
+        Assert.False((await authorizer.AuthorizeAsync(roleOnly, "SystemAdministrator")).Succeeded);
+        var player = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "Player"),
+            new Claim("amr", "mfa")
+        ], "test"));
+        Assert.False((await authorizer.AuthorizeAsync(player, "SystemAdministrator")).Succeeded);
+        // A claim alone cannot satisfy the policy without a linked, enrolled Identity user.
+        // The policy carries a database-backed requirement; the test does not call it with
+        // a fictitious linked account against the dummy connection.
+        var policy = await scope.ServiceProvider.GetRequiredService<IAuthorizationPolicyProvider>()
+            .GetPolicyAsync("SystemAdministrator");
+        Assert.Contains(policy!.Requirements, x => x is SaturdayScout.Infrastructure.Identity.SystemAdministratorMfaRequirement);
+        var commissionerWithoutLeague = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "LeagueCommissioner")
+        ], "test"));
+        Assert.False((await authorizer.AuthorizeAsync(commissionerWithoutLeague, "LeagueCommissioner")).Succeeded);
+    }
+
     [PostgresFact]
     public async Task AuthorizationSubmissionConcurrencyDeadlinesAndStandings()
     {
@@ -149,9 +187,11 @@ public sealed class ApiFlowTests
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
         });
         using var client = Client(factory, "commissioner");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/games?sport=nfl&season=2026&week=8")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/admin/dashboard")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/openapi/v1.json")).StatusCode);
     }
 
@@ -178,12 +218,14 @@ public sealed class TestDatabase : IAsyncDisposable
     private readonly NpgsqlConnection _admin;
     private readonly string _name;
     private readonly string _connection;
+    private readonly string _keyPath;
 
-    private TestDatabase(NpgsqlConnection admin, string name, string connection)
+    private TestDatabase(NpgsqlConnection admin, string name, string connection, string keyPath)
     {
         _admin = admin;
         _name = name;
         _connection = connection;
+        _keyPath = keyPath;
     }
 
     public static async Task<TestDatabase> Create()
@@ -198,19 +240,26 @@ public sealed class TestDatabase : IAsyncDisposable
         await using (var create = new NpgsqlCommand($"CREATE DATABASE \"{name}\"", admin))
             await create.ExecuteNonQueryAsync();
         var testBuilder = new NpgsqlConnectionStringBuilder(adminBuilder.ConnectionString) { Database = name, Pooling = false };
-        var database = new TestDatabase(admin, name, testBuilder.ConnectionString);
+        var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-api-test-keys-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(keyPath);
+        var database = new TestDatabase(admin, name, testBuilder.ConnectionString, keyPath);
         await using var context = database.Context();
         await context.Database.MigrateAsync();
+        await using var identity = database.IdentityContext();
+        await identity.Database.MigrateAsync();
         return database;
     }
 
     public SaturdayScoutDbContext Context() => new(new DbContextOptionsBuilder<SaturdayScoutDbContext>().UseNpgsql(_connection).Options);
+    public ScoutIdentityDbContext IdentityContext() => new(new DbContextOptionsBuilder<ScoutIdentityDbContext>()
+        .UseNpgsql(_connection, options => options.MigrationsHistoryTable("__EFMigrationsHistory", "auth")).Options);
 
     public WebApplicationFactory<Program> Factory(string environment) => new WebApplicationFactory<Program>()
         .WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment(environment);
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", _connection);
+            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", _keyPath);
         });
 
     public async ValueTask DisposeAsync()
@@ -218,5 +267,6 @@ public sealed class TestDatabase : IAsyncDisposable
         await using var drop = new NpgsqlCommand($"DROP DATABASE \"{_name}\" WITH (FORCE)", _admin);
         await drop.ExecuteNonQueryAsync();
         await _admin.DisposeAsync();
+        Directory.Delete(_keyPath, recursive: true);
     }
 }

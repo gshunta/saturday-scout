@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/SaturdayScout.Admin/SaturdayScout.Admin.csproj" />
     <Project Path="src/SaturdayScout.Api/SaturdayScout.Api.csproj" />
     <Project Path="src/SaturdayScout.Application/SaturdayScout.Application.csproj" />
     <Project Path="src/SaturdayScout.Domain/SaturdayScout.Domain.csproj" />
@@ -7,6 +8,7 @@
     <Project Path="src/SaturdayScout.Infrastructure/SaturdayScout.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/SaturdayScout.Admin.IntegrationTests/SaturdayScout.Admin.IntegrationTests.csproj" />
     <Project Path="tests/SaturdayScout.Api.IntegrationTests/SaturdayScout.Api.IntegrationTests.csproj" />
     <Project Path="tests/SaturdayScout.Domain.Tests/SaturdayScout.Domain.Tests.csproj" />
     <Project Path="tests/SaturdayScout.Infrastructure.Tests/SaturdayScout.Infrastructure.Tests.csproj" />

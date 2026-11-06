@@ -1,0 +1,30 @@
+﻿@inherits LayoutComponentBase
+
+<header class="site-header">
+    <div class="shell header-row">
+        <a class="brand" href="/">Saturday Scout <span>Admin</span></a>
+        <nav aria-label="Main navigation">
+            <AuthorizeView Policy="SystemAdministrator">
+                <Authorized>
+                    <a href="/dashboard">Dashboard</a>
+                    <a href="/games">Games</a>
+                    <a href="/leagues">Leagues</a>
+                    <a href="/slates">Weekly slates</a>
+                    <form method="post" action="/auth/logout" class="inline-form">
+                        <AntiforgeryToken />
+                        <button type="submit" class="text-button">Log out</button>
+                    </form>
+                </Authorized>
+                <NotAuthorized><a href="/login">Sign in</a></NotAuthorized>
+            </AuthorizeView>
+        </nav>
+    </div>
+</header>
+
+<main class="shell page-content">@Body</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

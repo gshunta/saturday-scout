@@ -1,0 +1,161 @@
+@page "/slates/{SlateId:guid}/edit"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+@inject NavigationManager Navigation
+
+<PageTitle>Edit Slate Draft</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Draft editor · Kickoffs in UTC</p><h1>Edit weekly slate</h1>
+    @if (slate is not null) { <p>@slate.LeagueName · Season @slate.Season · Week @slate.Week</p> }</div></div>
+
+@if (loading) { <p role="status">Loading draft…</p> }
+else if (slate is null) { <p class="notice error" role="alert">@error</p><a href="/slates">Back to slates</a> }
+else if (!editable) { <section class="card"><h2>This slate is read-only</h2><p>Only unpublished drafts can be changed.</p><a href="/slates/@SlateId">View slate</a></section> }
+else
+{
+    <section class="card section-card">
+        <div class="section-heading"><div><h2>Selected games <span class="muted">@selected.Count / 10</span></h2>
+            <p>@(selected.Count == 10 ? "Ready for later publishing review." : "Incomplete drafts can be saved and reopened.")</p></div>
+            <span class="action-row"><button class="button secondary" disabled="@saving" @onclick="Randomize">Randomly select &amp; save 10</button>
+                <button class="button" disabled="@saving" @onclick="Save">@(saving ? "Saving…" : "Save draft")</button></span></div>
+        @if (feedback is not null) { <p class="notice" role="status">@feedback</p> }
+        @if (selected.Count == 0) { <p class="empty-state">Choose eligible games below to begin the draft.</p> }
+        else
+        {
+            <ol class="selected-games">
+                @for (var i = 0; i < selected.Count; i++)
+                {
+                    var itemIndex = i;
+                    var game = selected[itemIndex];
+                    <li><span><strong>@(itemIndex + 1).</strong> @Kickoff(game.KickoffUtc) · @game.AwayTeam at @game.HomeTeam</span>
+                        <span class="action-row"><button class="icon-button" title="Move up" disabled="@(itemIndex == 0)" @onclick="() => Move(itemIndex, -1)">↑</button>
+                            <button class="icon-button" title="Move down" disabled="@(itemIndex == selected.Count - 1)" @onclick="() => Move(itemIndex, 1)">↓</button>
+                            <button class="text-button dark" @onclick="() => Remove(game.Id)">Remove</button></span></li>
+                }
+            </ol>
+        }
+    </section>
+
+    <section class="card section-card">
+        <div class="section-heading"><div><p class="eyebrow">Eligible game browser</p><h2>Add or replace games</h2></div></div>
+        <div class="filters compact"><label>Team <input @bind="search" @bind:event="oninput" maxlength="100" placeholder="Name or abbreviation" /></label>
+            <button class="button secondary" @onclick="Search">Search</button></div>
+        @if (candidatesLoading) { <p role="status">Loading available games…</p> }
+        else if (candidates is not null && candidates.Items.Count == 0) { <p class="empty-state">No eligible games match this search for the slate’s week.</p> }
+        else if (candidates is not null)
+        {
+            <div class="table-wrap"><table><thead><tr><th>Select</th><th>Kickoff (UTC)</th><th>Matchup</th><th>Status</th><th>Score</th></tr></thead><tbody>
+                @foreach (var game in candidates.Items)
+                {
+                    var disabled = !Eligible(game) || (!IsSelected(game.Id) && selected.Count >= 10);
+                    <tr><td><input type="checkbox" checked="@IsSelected(game.Id)" disabled="@disabled" aria-label="Select @game.AwayTeam at @game.HomeTeam" @onchange="args => Toggle(game, args)" /></td>
+                        <td>@Kickoff(game.KickoffUtc)</td><td>@game.AwayTeam at @game.HomeTeam</td><td>@game.Status</td><td>@Score(game)</td></tr>
+                }
+            </tbody></table></div>
+            <div class="pagination"><button class="button secondary" disabled="@(candidatePage <= 1)" @onclick="Previous">Previous</button>
+                <span>Page @candidatePage of @CandidatePageCount</span><button class="button secondary" disabled="@(candidatePage >= CandidatePageCount)" @onclick="Next">Next</button></div>
+        }
+    </section>
+    <p><a href="/slates/@SlateId">Cancel and view draft</a></p>
+}
+
+@code {
+    [Parameter] public Guid SlateId { get; set; }
+    private AdminSlateDto? slate;
+    private readonly List<AdminGameDto> selected = [];
+    private AdminGamesPageDto? candidates;
+    private string search = "";
+    private string? error;
+    private string? feedback;
+    private bool loading = true;
+    private bool candidatesLoading;
+    private bool saving;
+    private int candidatePage = 1;
+    private const int pageSize = 25;
+    private int CandidatePageCount => Math.Max(1, (int)Math.Ceiling((candidates?.TotalCount ?? 0) / (double)pageSize));
+    private bool editable => slate?.Status == "Draft";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        loading = true; error = null;
+        try
+        {
+            slate = await Admin.GetSlateAsync(SlateId);
+            selected.Clear(); selected.AddRange(slate.Games);
+            await Search();
+        }
+        catch (Exception) { error = "This slate is unavailable or could not be loaded."; }
+        finally { loading = false; }
+    }
+
+    private async Task Search()
+    {
+        if (slate is null) return;
+        candidatesLoading = true;
+        try
+        {
+            candidates = await Admin.BrowseGamesAsync(new AdminGameQuery(search, null, null,
+                slate.Season, slate.Week, false, candidatePage, pageSize));
+            if (candidatePage > CandidatePageCount) { candidatePage = CandidatePageCount; await Search(); }
+        }
+        catch (Exception) { feedback = "Available games could not be loaded."; }
+        finally { candidatesLoading = false; }
+    }
+
+    private async Task Save()
+    {
+        if (slate is null || !editable) return;
+        saving = true; feedback = null;
+        try
+        {
+            slate = await Admin.UpdateSlateGamesAsync(SlateId,
+                new UpdateAdminSlateGamesRequest(selected.Select(x => x.Id).ToArray(), slate.Version));
+            selected.Clear(); selected.AddRange(slate.Games);
+            feedback = selected.Count == 10 ? "Draft saved with 10 games and is ready for later review." : $"Draft saved with {selected.Count} of 10 games.";
+        }
+        catch (Exception)
+        {
+            feedback = "Draft was not saved. It may have changed elsewhere or become read-only. Reload before trying again.";
+        }
+        finally { saving = false; }
+    }
+
+    private async Task Randomize()
+    {
+        if (slate is null || !editable) return;
+        saving = true; feedback = null;
+        try
+        {
+            slate = await Admin.RandomizeSlateGamesAsync(SlateId, new RandomizeAdminSlateRequest(slate.Version));
+            selected.Clear(); selected.AddRange(slate.Games);
+            feedback = "Draft saved with 10 randomly selected eligible games.";
+        }
+        catch (Exception)
+        {
+            feedback = "A random selection could not be made. Check that at least 10 eligible games remain, then reload if this draft changed elsewhere.";
+        }
+        finally { saving = false; }
+    }
+
+    private void Toggle(AdminGameDto game, ChangeEventArgs args)
+    {
+        if (string.Equals(args.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            if (selected.Count < 10 && Eligible(game) && !IsSelected(game.Id)) selected.Add(game);
+        }
+        else Remove(game.Id);
+    }
+    private bool IsSelected(Guid id) => selected.Any(x => x.Id == id);
+    private static bool Eligible(AdminGameDto game) => game.Status is not ("Final" or "Canceled" or "NoContest");
+    private void Remove(Guid id) => selected.RemoveAll(x => x.Id == id);
+    private void Move(int index, int delta)
+    {
+        var target = index + delta;
+        if (target < 0 || target >= selected.Count) return;
+        (selected[index], selected[target]) = (selected[target], selected[index]);
+    }
+    private Task Previous() { if (candidatePage > 1) candidatePage--; return Search(); }
+    private Task Next() { if (candidatePage < CandidatePageCount) candidatePage++; return Search(); }
+    private static string Kickoff(DateTimeOffset? time) => time?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") ?? "Time TBD";
+    private static string Score(AdminGameDto game) => game.HomeScore is null || game.AwayScore is null ? "—" : $"{game.AwayScore}–{game.HomeScore}";
+}

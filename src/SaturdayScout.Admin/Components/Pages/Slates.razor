@@ -1,0 +1,38 @@
+@page "/slates"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+
+<PageTitle>Weekly Slates</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Competition setup</p><h1>Weekly slates</h1>
+    <p>Drafts are league-specific. A draft with 10 eligible games is ready for a later publishing step.</p></div>
+    <a class="button" href="/slates/new">Create draft</a></div>
+
+@if (loading) { <p role="status">Loading slates…</p> }
+else if (error is not null) { <p class="notice error" role="alert">@error</p><button class="button" @onclick="Load">Retry</button> }
+else if (slates.Count == 0) { <section class="card empty-state"><h2>No weekly slates yet</h2><p>Create a configured league before setting up a league-specific weekly slate.</p></section> }
+else
+{
+    <section class="card section-card"><div class="table-wrap"><table><thead><tr><th>League</th><th>Season</th><th>Week</th><th>Games</th><th>Status</th><th>Readiness</th><th></th></tr></thead><tbody>
+        @foreach (var slate in slates)
+        {
+            <tr><td>@slate.LeagueName</td><td>@slate.Season</td><td>@slate.Week</td><td>@slate.GameCount / 10</td><td>@slate.Status</td>
+                <td>@SlateReadinessPresentation.Label(slate.Status, slate.ReadyForPublishing)</td>
+                <td><a href="/slates/@slate.Id">View</a>@if (slate.Status == "Draft") { <span> · </span><a href="/slates/@slate.Id/edit">Edit</a> }</td></tr>
+        }
+    </tbody></table></div></section>
+}
+
+@code {
+    private IReadOnlyList<AdminSlateSummaryDto> slates = [];
+    private bool loading = true;
+    private string? error;
+    protected override Task OnInitializedAsync() => Load();
+    private async Task Load()
+    {
+        loading = true; error = null;
+        try { slates = await Admin.GetSlatesAsync(); }
+        catch (Exception) { error = "Weekly slates could not be loaded. Try again."; }
+        finally { loading = false; }
+    }
+}

@@ -1,0 +1,47 @@
+@page "/enroll"
+@attribute [Authorize(Policy = "MfaEnrollment")]
+@inject Microsoft.AspNetCore.Identity.UserManager<SaturdayScout.Infrastructure.Identity.ApplicationUser> Users
+
+<PageTitle>Enroll authenticator</PageTitle>
+
+<section class="card narrow">
+    <p class="eyebrow">Required administrator protection</p>
+    <h1>Set up your authenticator</h1>
+    <p>Add this account to a TOTP authenticator app. Enter the key manually or open the setup URI on a trusted device.</p>
+    @if (authenticatorKey is not null)
+    {
+        <p><strong>Manual key</strong><br /><code class="secret">@authenticatorKey</code></p>
+        <p><a href="@setupUri">Open authenticator setup URI</a></p>
+        @if (Error is not null)
+        {
+            <p role="alert" class="notice">That code could not be verified. Try a current code.</p>
+        }
+        <form method="post" action="/auth/enroll">
+            <AntiforgeryToken />
+            <label for="code">Six-digit code from your app</label>
+            <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required maxlength="10" />
+            <button type="submit" class="button">Enable MFA</button>
+        </form>
+    }
+    else
+    {
+        <p role="alert">Authenticator setup is unavailable. Sign in again.</p>
+    }
+</section>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthenticationState { get; set; }
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    private string? authenticatorKey;
+    private string? setupUri;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthenticationState is null) return;
+        var user = await Users.GetUserAsync((await AuthenticationState).User);
+        if (user is null) return;
+        authenticatorKey = await Users.GetAuthenticatorKeyAsync(user);
+        if (authenticatorKey is null) return;
+        setupUri = $"otpauth://totp/{Uri.EscapeDataString("Saturday Scout Admin")}:{Uri.EscapeDataString(user.Email ?? "")}?secret={Uri.EscapeDataString(authenticatorKey)}&issuer={Uri.EscapeDataString("Saturday Scout Admin")}&digits=6";
+    }
+}

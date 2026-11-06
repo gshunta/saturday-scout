@@ -1,0 +1,23 @@
+@page "/mfa"
+
+<PageTitle>Verify authenticator</PageTitle>
+
+<section class="card narrow">
+    <p class="eyebrow">Second step</p>
+    <h1>Authenticator code</h1>
+    @if (Error is not null)
+    {
+        <p role="alert" class="notice">The code could not be verified. Try a current code.</p>
+    }
+    <form method="post" action="/auth/mfa">
+        <AntiforgeryToken />
+        <label for="code">Six-digit code</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required maxlength="10" />
+        <button type="submit" class="button">Verify</button>
+    </form>
+    <p><a href="/recovery">Use a recovery code</a></p>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+}

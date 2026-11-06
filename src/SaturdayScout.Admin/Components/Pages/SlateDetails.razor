@@ -1,0 +1,90 @@
+@page "/slates/{SlateId:guid}"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+
+<PageTitle>Weekly Slate</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Slate review</p><h1>Weekly slate</h1></div>
+    @if (slate?.Status == "Draft") { <a class="button" href="/slates/@SlateId/edit">Edit draft</a> }</div>
+
+@if (loading) { <p role="status">Loading slate…</p> }
+else if (error is not null) { <p class="notice error" role="alert">@error</p><a href="/slates">Back to slates</a> }
+else if (slate is not null)
+{
+    <section class="card section-card">
+        <dl class="detail-grid"><div><dt>League</dt><dd>@slate.LeagueName</dd></div><div><dt>Season</dt><dd>@slate.Season</dd></div>
+            <div><dt>Week</dt><dd>@slate.Week</dd></div><div><dt>Status</dt><dd>@slate.Status</dd></div>
+            <div><dt>Games</dt><dd>@slate.Games.Count / 10</dd></div>
+            <div><dt>Readiness</dt><dd>@SlateReadinessPresentation.Label(slate.Status, slate.ReadyForPublishing)</dd></div>
+            @if (slate.LockUtc is not null) { <div><dt>Lock (UTC)</dt><dd>@Kickoff(slate.LockUtc)</dd></div> }
+            @if (slate.PublishedUtc is not null) { <div><dt>Published (UTC)</dt><dd>@Kickoff(slate.PublishedUtc)</dd></div> }
+        </dl>
+    </section>
+    @if (publishMessage is not null) { <p class="notice" role="status">@publishMessage</p> }
+    @if (slate.Status == "Draft")
+    {
+        <section class="card section-card">
+            <h2>Publish slate</h2>
+            @if (!slate.ReadyForPublishing)
+            { <p class="empty-state">Select exactly 10 eligible games before publishing.</p> }
+            else
+            {
+                <label>Lock time (UTC) <input type="datetime-local" value="@lockUtcInput" @onchange="LockTimeChanged" /></label>
+                <p class="muted">The lock must be in the future and no later than the earliest selected kickoff.</p>
+                <button class="button" disabled="@publishing" @onclick="Publish">@(publishing ? "Publishing…" : "Publish slate")</button>
+            }
+        </section>
+    }
+    <section class="card section-card"><h2>Ordered games</h2>
+        @if (slate.Games.Count == 0) { <p class="empty-state">No games have been selected.</p> }
+        else { <div class="table-wrap"><table><thead><tr><th>Order</th><th>Kickoff (UTC)</th><th>Matchup</th><th>Status</th><th>Score</th></tr></thead><tbody>
+            @foreach (var game in slate.Games.Select((item, index) => (item, index)))
+            { <tr><td>@(game.index + 1)</td><td>@Kickoff(game.item.KickoffUtc)</td><td>@game.item.AwayTeam at @game.item.HomeTeam</td><td>@game.item.Status</td><td>@Score(game.item)</td></tr> }
+        </tbody></table></div> }
+    </section>
+    <p><a href="/slates">← Weekly slates</a></p>
+}
+
+@code {
+    [Parameter] public Guid SlateId { get; set; }
+    private AdminSlateDto? slate;
+    private bool loading = true;
+    private bool publishing;
+    private string? error;
+    private string? publishMessage;
+    private string lockUtcInput = "";
+    protected override async Task OnParametersSetAsync()
+    {
+        loading = true; error = null;
+        try
+        {
+            slate = await Admin.GetSlateAsync(SlateId);
+            if (slate.ReadyForPublishing && string.IsNullOrWhiteSpace(lockUtcInput))
+            {
+                var earliest = slate.Games.Min(x => x.KickoffUtc);
+                lockUtcInput = earliest?.ToUniversalTime().AddMinutes(-1).ToString("yyyy-MM-ddTHH:mm") ?? "";
+            }
+        }
+        catch (Exception) { error = "This slate could not be loaded."; }
+        finally { loading = false; }
+    }
+    private async Task Publish()
+    {
+        if (slate is null || slate.Status != "Draft" || !slate.ReadyForPublishing) return;
+        if (!DateTime.TryParseExact(lockUtcInput, "yyyy-MM-ddTHH:mm",
+            System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed))
+        { publishMessage = "Enter a valid lock time in UTC."; return; }
+        var lockUtc = new DateTimeOffset(DateTime.SpecifyKind(parsed, DateTimeKind.Utc));
+        publishing = true; publishMessage = null;
+        try
+        {
+            slate = await Admin.PublishSlateAsync(SlateId, new PublishAdminSlateRequest(lockUtc, slate.Version));
+            publishMessage = "Slate published. It is now read-only.";
+        }
+        catch (Exception) { publishMessage = "The slate was not published. Check the lock time and reload if it changed elsewhere."; }
+        finally { publishing = false; }
+    }
+    private void LockTimeChanged(ChangeEventArgs args) => lockUtcInput = args.Value?.ToString() ?? "";
+    private static string Kickoff(DateTimeOffset? value) => value?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") ?? "Time TBD";
+    private static string Score(AdminGameDto game) => game.HomeScore is null || game.AwayScore is null ? "—" : $"{game.AwayScore}–{game.HomeScore}";
+}

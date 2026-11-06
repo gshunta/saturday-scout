@@ -1,0 +1,142 @@
+@page "/leagues"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+
+<PageTitle>Leagues</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Competition setup</p><h1>Leagues</h1>
+    <p>Create a private league and assign an existing user as its commissioner.</p></div></div>
+
+<section class="card narrow">
+    <h2>Create private league</h2>
+    @if (loading)
+    {
+        <p role="status">Loading eligible users…</p>
+    }
+    else if (commissionerLoadError is not null)
+    {
+        <p class="notice error" role="alert">@commissionerLoadError</p>
+        <button class="button secondary" @onclick="Load">Retry</button>
+    }
+    else if (commissioners.Count == 0)
+    {
+        <p class="empty-state">No domain users are available to assign as commissioner. Provision or link a user account first.</p>
+    }
+    else
+    {
+        <label for="league-name">League name</label>
+        <input id="league-name" @bind="name" maxlength="200" autocomplete="off" />
+        <label for="commissioner">Commissioner</label>
+        <select id="commissioner" @bind="commissionerId" disabled="@loading">
+            <option value="">Choose an existing user</option>
+            @foreach (var user in commissioners)
+            {
+                <option value="@user.Id">@user.DisplayName@(string.IsNullOrWhiteSpace(user.Email) ? "" : $" ({user.Email})")</option>
+            }
+        </select>
+        @if (error is not null) { <p class="notice error" role="alert">@error</p> }
+        @if (success is not null) { <p class="notice success" role="status">@success</p> }
+        <button class="button" disabled="@(saving || loading || commissioners.Count == 0)" @onclick="Create">
+            @(saving ? "Creating…" : "Create league")
+        </button>
+    }
+</section>
+
+<section class="card section-card">
+    <h2>Configured leagues</h2>
+    @if (loading) { <p role="status">Loading leagues…</p> }
+    else if (leagueLoadError is not null) { <p class="notice error" role="alert">@leagueLoadError</p><button class="button secondary" @onclick="Load">Retry</button> }
+    else if (leagues.Count == 0) { <p class="empty-state">No leagues have been created yet.</p> }
+    else
+    {
+        <div class="table-wrap"><table><thead><tr><th>League</th><th>Action</th></tr></thead><tbody>
+            @foreach (var league in leagues)
+            {
+                <tr><td>@league.Name</td><td><a href="/slates/new">Create weekly slate</a></td></tr>
+            }
+        </tbody></table></div>
+    }
+</section>
+
+@code {
+    private IReadOnlyList<AdminCommissionerDto> commissioners = [];
+    private IReadOnlyList<AdminLeagueDto> leagues = [];
+    private string name = "";
+    private string commissionerId = "";
+    private bool loading = true;
+    private bool saving;
+    private string? error;
+    private string? success;
+    private string? commissionerLoadError;
+    private string? leagueLoadError;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        loading = true;
+        commissionerLoadError = null;
+        leagueLoadError = null;
+        var usersTask = Admin.GetEligibleCommissionersAsync();
+        try
+        {
+            commissioners = await usersTask;
+        }
+        catch (Exception)
+        {
+            commissioners = [];
+            commissionerLoadError = "Eligible users could not be loaded. Check the Admin database connection and retry.";
+        }
+
+        try
+        {
+            leagues = await Admin.GetLeaguesAsync();
+        }
+        catch (Exception)
+        {
+            leagues = [];
+            leagueLoadError = "Configured leagues could not be loaded. Check the Admin database connection and retry.";
+        }
+        finally { loading = false; }
+    }
+
+    private async Task Create()
+    {
+        success = null;
+        error = null;
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 200)
+        {
+            error = "Enter a league name of 1 to 200 characters.";
+            return;
+        }
+        if (!Guid.TryParse(commissionerId, out var selectedId) || commissioners.All(x => x.Id != selectedId))
+        {
+            error = "Select an existing user as commissioner.";
+            return;
+        }
+        if (saving) return;
+
+        saving = true;
+        try
+        {
+            var league = await Admin.CreateLeagueAsync(new CreateAdminLeagueRequest(name.Trim(), selectedId));
+            leagues = leagues.Append(league).OrderBy(x => x.Name).ToArray();
+            success = $"League ‘{league.Name}’ created. It is now available when creating a weekly slate.";
+            name = "";
+            commissionerId = "";
+        }
+        catch (ScoutException exception) when (exception.Error == ScoutError.Invalid)
+        {
+            error = exception.Message;
+        }
+        catch (ScoutException exception) when (exception.Error == ScoutError.Conflict)
+        {
+            error = exception.Message;
+        }
+        catch (Exception)
+        {
+            error = "The league could not be created. Refresh the page and try again.";
+        }
+        finally { saving = false; }
+    }
+}

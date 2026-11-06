@@ -1,0 +1,78 @@
+@page "/games"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+
+<PageTitle>College Football Games</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Schedule</p><h1>College football games</h1>
+    <p>Filter imported games. Kickoff times are shown in UTC.</p></div></div>
+
+<section class="card filters">
+    <label>Season <select @bind="season"><option value="">All seasons</option>@foreach (var item in seasons) { <option value="@item">@item</option> }</select></label>
+    <label>Week <select @bind="week"><option value="">All weeks</option>@foreach (var item in weeks) { <option value="@item">@item</option> }</select></label>
+    <label class="search-field">Team <input @bind="search" @bind:event="oninput" placeholder="Name or abbreviation" maxlength="100" /></label>
+    <label>Status <select @bind="status"><option value="">All statuses</option>@foreach (var item in statuses) { <option value="@item">@item</option> }</select></label>
+    <button class="button" @onclick="ApplyFilters">Apply</button>
+</section>
+<p class="muted">Conference filtering is unavailable because conference values are not present in the current team data.</p>
+
+@if (loading) { <p role="status">Loading games…</p> }
+else if (error is not null) { <p class="notice error" role="alert">@error</p><button class="button" @onclick="ApplyFilters">Retry</button> }
+else if (pageData is not null)
+{
+    <section class="card section-card">
+        <div class="section-heading"><p>@pageData.TotalCount games · page @pageData.Page of @PageCount</p>
+            <button class="text-button dark" @onclick="ToggleSort">Kickoff UTC @(descending ? "↓" : "↑")</button></div>
+        @if (pageData.Items.Count == 0) { <p class="empty-state">No games match these filters.</p> }
+        else
+        {
+            <div class="table-wrap"><table><thead><tr><th>Kickoff (UTC)</th><th>Matchup</th><th>Season</th><th>Week</th><th>Status</th><th>Score</th></tr></thead><tbody>
+                @foreach (var game in pageData.Items)
+                {
+                    <tr><td>@Kickoff(game.KickoffUtc)</td><td>@game.AwayTeam at @game.HomeTeam</td><td>@game.Season</td><td>@game.Week</td><td><span class="status-pill">@game.Status</span></td><td>@Score(game)</td></tr>
+                }
+            </tbody></table></div>
+        }
+        <div class="pagination"><button class="button secondary" disabled="@(pageNumber <= 1)" @onclick="Previous">Previous</button>
+            <span>Page @pageNumber</span><button class="button secondary" disabled="@(pageData.Items.Count < pageSize || pageNumber >= PageCount)" @onclick="Next">Next</button></div>
+    </section>
+}
+
+@code {
+    private static readonly string[] statuses = ["Scheduled", "InProgress", "Final", "Postponed", "Canceled", "NoContest"];
+    private AdminGamesPageDto? pageData;
+    private IReadOnlyList<int> seasons = [];
+    private IReadOnlyList<int> weeks = [];
+    private int? season;
+    private int? week;
+    private string search = "";
+    private string status = "";
+    private bool descending;
+    private bool loading;
+    private string? error;
+    private const int pageSize = 25;
+    private int pageNumber = 1;
+    private int PageCount => Math.Max(1, (int)Math.Ceiling((pageData?.TotalCount ?? 0) / (double)pageSize));
+
+    protected override Task OnInitializedAsync() => Load();
+    private Task ApplyFilters() { pageNumber = 1; return Load(); }
+    private Task ToggleSort() { descending = !descending; pageNumber = 1; return Load(); }
+    private Task Previous() { if (pageNumber > 1) pageNumber--; return Load(); }
+    private Task Next() { if (pageData is not null && pageNumber < PageCount) pageNumber++; return Load(); }
+
+    private async Task Load()
+    {
+        loading = true; error = null;
+        try
+        {
+            pageData = await Admin.BrowseGamesAsync(new AdminGameQuery(search, null, status, season, week, descending, pageNumber, pageSize));
+            seasons = pageData.Seasons; weeks = pageData.Weeks;
+            if (pageNumber > PageCount) { pageNumber = PageCount; await Load(); }
+        }
+        catch (Exception) { error = "Games could not be loaded. Try again."; }
+        finally { loading = false; }
+    }
+
+    private static string Kickoff(DateTimeOffset? time) => time?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") ?? "Time TBD";
+    private static string Score(AdminGameDto game) => game.HomeScore is null || game.AwayScore is null ? "—" : $"{game.AwayScore}–{game.HomeScore}";
+}

@@ -52,6 +52,62 @@ public interface IScoutService
     Task<LeaderboardDto> GetLeaderboardAsync(Guid actorId, Guid leagueId, string scope, int season, int? week, CancellationToken ct);
 }
 
+public sealed record AdminDashboardDto(int TeamCount, int GameCount, int LeagueCount, int SlateCount,
+    int DraftSlateCount, int PublishedSlateCount, DateTimeOffset? MostRecentImportUtc,
+    string? MostRecentImportProvider, string? MostRecentImportStatus,
+    IReadOnlyList<AdminGameDto> UpcomingGames);
+public sealed record AdminGameDto(Guid Id, string Sport, int Season, int Week, Guid HomeTeamId,
+    Guid AwayTeamId, string HomeTeam, string AwayTeam, DateTimeOffset? KickoffUtc,
+    string Status, int? HomeScore, int? AwayScore, string? HomeConference, string? AwayConference);
+public sealed record AdminGamesPageDto(IReadOnlyList<AdminGameDto> Items, int TotalCount,
+    int Page, int PageSize, IReadOnlyList<int> Seasons, IReadOnlyList<int> Weeks,
+    bool ConferenceFilterAvailable);
+public sealed record AdminGameQuery(string? Search, string? Conference, string? Status,
+    int? Season, int? Week, bool KickoffDescending, int Page, int PageSize);
+public sealed record AdminLeagueDto(Guid Id, string Name);
+public sealed record AdminCommissionerDto(Guid Id, string DisplayName, string? Email);
+public sealed record CreateAdminLeagueRequest(string Name, Guid CommissionerUserId);
+public sealed record AdminSlateSummaryDto(Guid Id, Guid LeagueId, string LeagueName,
+    int Season, int Week, string Status, int GameCount, bool ReadyForPublishing, long Version);
+public sealed record AdminSlateDto(Guid Id, Guid LeagueId, string LeagueName, int Season,
+    int Week, string Status, DateTimeOffset? LockUtc, DateTimeOffset? PublishedUtc,
+    bool ReadyForPublishing, long Version, IReadOnlyList<AdminGameDto> Games);
+public sealed record CreateAdminSlateRequest(Guid LeagueId, int Season, int Week);
+public sealed record UpdateAdminSlateGamesRequest(IReadOnlyList<Guid> GameIds, long ExpectedVersion);
+public sealed record RandomizeAdminSlateRequest(long ExpectedVersion);
+public sealed record PublishAdminSlateRequest(DateTimeOffset LockUtc, long ExpectedVersion);
+
+public interface IAdminScoutService
+{
+    Task<AdminDashboardDto> GetDashboardAsync(CancellationToken ct);
+    Task<AdminGamesPageDto> BrowseGamesAsync(AdminGameQuery query, CancellationToken ct);
+    Task<IReadOnlyList<AdminLeagueDto>> GetLeaguesAsync(CancellationToken ct);
+    Task<IReadOnlyList<AdminCommissionerDto>> GetEligibleCommissionersAsync(CancellationToken ct);
+    Task<AdminLeagueDto> CreateLeagueAsync(CreateAdminLeagueRequest request, CancellationToken ct);
+    Task<IReadOnlyList<AdminSlateSummaryDto>> GetSlatesAsync(CancellationToken ct);
+    Task<AdminSlateDto> GetSlateAsync(Guid slateId, CancellationToken ct);
+    Task<AdminSlateDto> CreateSlateAsync(CreateAdminSlateRequest request, CancellationToken ct);
+    Task<AdminSlateDto> UpdateSlateGamesAsync(Guid slateId, UpdateAdminSlateGamesRequest request, CancellationToken ct);
+    Task<AdminSlateDto> RandomizeSlateGamesAsync(Guid slateId, RandomizeAdminSlateRequest request, CancellationToken ct);
+    Task<AdminSlateDto> PublishSlateAsync(Guid slateId, PublishAdminSlateRequest request, CancellationToken ct);
+}
+
+public static class AdminGameQueryValidation
+{
+    public static void Validate(AdminGameQuery query)
+    {
+        if (query.Page < 1 || query.PageSize is < 1 or > 100 ||
+            query.Season is < 1900 or > 9999 || query.Week is < 1 or > 30 ||
+            query.Search?.Length > 100 || query.Conference?.Length > 100)
+            throw new ScoutException(ScoutError.Invalid, "Invalid game filter or pagination.");
+        if (!string.IsNullOrWhiteSpace(query.Conference))
+            throw new ScoutException(ScoutError.Invalid, "Conference metadata is not available for imported teams.");
+        if (!string.IsNullOrWhiteSpace(query.Status) &&
+            (!Enum.TryParse<GameStatus>(query.Status, true, out var status) || !Enum.IsDefined(status)))
+            throw new ScoutException(ScoutError.Invalid, "Unknown game status.");
+    }
+}
+
 public interface IScoutStore : IScoutService, IResultImportService;
 
 public static class ScoutSport

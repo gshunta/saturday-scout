@@ -95,6 +95,42 @@ public sealed class DomainRulesTests
     }
 
     [Fact]
+    public void RandomGameSelectionProducesTenUniqueEligibleGamesForSlateWeek()
+    {
+        var slate = new WeeklySlate(Guid.NewGuid(), Guid.NewGuid(), Sport.CollegeFootball, 2026, 10);
+        var eligible = Enumerable.Range(0, 14).Select(i => new Game(Guid.NewGuid(), Sport.CollegeFootball,
+            2026, 10, Guid.NewGuid(), Guid.NewGuid(), Now.AddDays(5).AddHours(i), "fixture", $"eligible-{i}"))
+            .ToList();
+        var wrongWeek = new Game(Guid.NewGuid(), Sport.CollegeFootball, 2026, 11, Guid.NewGuid(), Guid.NewGuid(),
+            Now.AddDays(5), "fixture", "wrong-week");
+        var final = new Game(Guid.NewGuid(), Sport.CollegeFootball, 2026, 10, Guid.NewGuid(), Guid.NewGuid(),
+            Now.AddDays(5), "fixture", "final");
+        final.SetFinalScore(10, 7);
+
+        slate.RandomizeGames(eligible.Concat([eligible[0], wrongWeek, final]), new Random(10));
+
+        Assert.Equal(10, slate.Games.Count);
+        Assert.Equal(10, slate.Games.Select(x => x.GameId).Distinct().Count());
+        Assert.All(slate.Games, selection => Assert.Contains(eligible, game => game.Id == selection.GameId));
+    }
+
+    [Fact]
+    public void RandomGameSelectionRequiresTenEligibleCandidatesAndDraftStatus()
+    {
+        var slate = new WeeklySlate(Guid.NewGuid(), Guid.NewGuid(), Sport.CollegeFootball, 2026, 10);
+        var fewerThanTen = Enumerable.Range(0, 9).Select(i => new Game(Guid.NewGuid(), Sport.CollegeFootball,
+            2026, 10, Guid.NewGuid(), Guid.NewGuid(), Now.AddDays(5).AddHours(i), "fixture", $"short-{i}"));
+        Assert.Throws<InvalidOperationException>(() => slate.RandomizeGames(fewerThanTen, new Random(1)));
+
+        var games = Enumerable.Range(0, 10).Select(i => new Game(Guid.NewGuid(), Sport.CollegeFootball,
+            2026, 10, Guid.NewGuid(), Guid.NewGuid(), Now.AddDays(5).AddHours(i), "fixture", $"publish-{i}"))
+            .ToList();
+        slate.ReplaceGames(games);
+        slate.Publish(games, Now.AddHours(3), Now);
+        Assert.Throws<InvalidOperationException>(() => slate.RandomizeGames(games, new Random(2)));
+    }
+
+    [Fact]
     public void ScoringDistinguishesPendingIncorrectVoidAndCorrect()
     {
         var (_, games, sheet) = Published();

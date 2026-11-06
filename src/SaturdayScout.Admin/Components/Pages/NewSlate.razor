@@ -1,0 +1,50 @@
+@page "/slates/new"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+@inject NavigationManager Navigation
+
+<PageTitle>Create Weekly Slate</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Competition setup</p><h1>New weekly draft</h1>
+    <p>Existing domain rules associate each slate with one league, season, and week.</p></div></div>
+
+<section class="card narrow">
+    @if (loading) { <p role="status">Loading leagues…</p> }
+    else if (leagues.Count == 0) { <p class="empty-state">There are no configured leagues. Create a league before creating its slate.</p><a href="/slates">Back to slates</a> }
+    else
+    {
+        <label>League <select @bind="leagueId"><option value="">Choose a league</option>@foreach (var league in leagues) { <option value="@league.Id">@league.Name</option> }</select></label>
+        <label>Season <input type="number" min="1900" max="9999" @bind="season" /></label>
+        <label>Week <input type="number" min="1" max="30" @bind="week" /></label>
+        @if (error is not null) { <p class="notice error" role="alert">@error</p> }
+        <button class="button" disabled="@saving" @onclick="Create">@(saving ? "Creating…" : "Create draft")</button>
+    }
+</section>
+
+@code {
+    private IReadOnlyList<AdminLeagueDto> leagues = [];
+    private string leagueId = "";
+    private int season = DateTime.UtcNow.Year;
+    private int week = 1;
+    private bool loading = true;
+    private bool saving;
+    private string? error;
+    protected override async Task OnInitializedAsync()
+    {
+        try { leagues = await Admin.GetLeaguesAsync(); }
+        catch (Exception) { error = "Leagues could not be loaded."; }
+        finally { loading = false; }
+    }
+    private async Task Create()
+    {
+        if (!Guid.TryParse(leagueId, out var id)) { error = "Select a league."; return; }
+        saving = true; error = null;
+        try
+        {
+            var slate = await Admin.CreateSlateAsync(new CreateAdminSlateRequest(id, season, week));
+            Navigation.NavigateTo($"/slates/{slate.Id}/edit");
+        }
+        catch (Exception) { error = "The draft could not be created. It may already exist for this league and week."; }
+        finally { saving = false; }
+    }
+}

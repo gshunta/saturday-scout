@@ -1,0 +1,76 @@
+@page "/dashboard"
+@attribute [Authorize(Policy = "SystemAdministrator")]
+@rendermode InteractiveServer
+@inject AdminPortalService Admin
+
+<PageTitle>Administration dashboard</PageTitle>
+<div class="page-heading">
+    <div><p class="eyebrow">Saturday Scout · Operations</p><h1>Dashboard</h1>
+        <p>Imported schedules and competition slate activity.</p></div>
+    <div class="action-row"><a class="button" href="/games">Browse games</a><a class="button secondary" href="/slates">Manage slates</a></div>
+</div>
+
+@if (loading)
+{
+    <p role="status">Loading dashboard metrics…</p>
+}
+else if (error is not null)
+{
+    <p class="notice error" role="alert">@error</p>
+    <button class="button" @onclick="Load">Retry</button>
+}
+else if (dashboard is not null)
+{
+    <section class="metric-grid" aria-label="College football metrics">
+        <MetricCard Label="Imported teams" Value="@dashboard.TeamCount" />
+        <MetricCard Label="Imported games" Value="@dashboard.GameCount" />
+        <MetricCard Label="Configured leagues" Value="@dashboard.LeagueCount" />
+        <MetricCard Label="Weekly slates" Value="@dashboard.SlateCount" />
+        <MetricCard Label="Draft slates" Value="@dashboard.DraftSlateCount" />
+        <MetricCard Label="Published slates" Value="@dashboard.PublishedSlateCount" />
+    </section>
+
+    <section class="card section-card">
+        <div class="section-heading"><div><p class="eyebrow">Import metadata</p><h2>Most recent available game update</h2></div></div>
+        @if (dashboard.MostRecentImportUtc is null)
+        { <p class="empty-state">No import timestamp is available on imported games.</p> }
+        else
+        {
+            <p><time datetime="@dashboard.MostRecentImportUtc.Value.ToString("O")">@dashboard.MostRecentImportUtc.Value.ToString("yyyy-MM-dd HH:mm 'UTC'")</time></p>
+            <p class="muted">Provider: @(dashboard.MostRecentImportProvider ?? "Unavailable") · Source status: @(dashboard.MostRecentImportStatus ?? "Unavailable")</p>
+        }
+    </section>
+
+    <section class="card section-card">
+        <div class="section-heading"><div><p class="eyebrow">Schedule</p><h2>Upcoming scheduled games</h2></div><a href="/games">All games →</a></div>
+        @if (dashboard.UpcomingGames.Count == 0)
+        { <p class="empty-state">There are no upcoming scheduled college football games.</p> }
+        else
+        {
+            <div class="table-wrap"><table><thead><tr><th>Kickoff (UTC)</th><th>Matchup</th><th>Week</th><th>Status</th></tr></thead><tbody>
+                @foreach (var game in dashboard.UpcomingGames)
+                {
+                    <tr><td>@Kickoff(game.KickoffUtc)</td><td>@game.AwayTeam at @game.HomeTeam</td><td>@game.Week</td><td>@game.Status</td></tr>
+                }
+            </tbody></table></div>
+        }
+    </section>
+}
+
+@code {
+    private AdminDashboardDto? dashboard;
+    private bool loading = true;
+    private string? error;
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        loading = true; error = null;
+        try { dashboard = await Admin.GetDashboardAsync(); }
+        catch (Exception) { error = "Dashboard data could not be loaded. Try again."; }
+        finally { loading = false; }
+    }
+
+    private static string Kickoff(DateTimeOffset? time) => time?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") ?? "Time TBD";
+}

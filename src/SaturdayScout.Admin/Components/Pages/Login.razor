@@ -1,0 +1,29 @@
+@page "/login"
+
+<PageTitle>Administrator sign in</PageTitle>
+
+<section class="card narrow">
+    <p class="eyebrow">Administrator access</p>
+    <h1>Sign in</h1>
+    @if (Error is not null)
+    {
+        <p role="alert" class="notice">Sign in could not be completed. Check your details or try again later.</p>
+    }
+    @if (SignedOut is not null)
+    {
+        <p class="notice">You have signed out.</p>
+    }
+    <form method="post" action="/auth/login">
+        <AntiforgeryToken />
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="username" required maxlength="256" />
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <button type="submit" class="button">Continue</button>
+    </form>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    [SupplyParameterFromQuery(Name = "signedout")] public string? SignedOut { get; set; }
+}

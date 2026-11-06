@@ -1,0 +1,23 @@
+@page "/recovery"
+
+<PageTitle>Use recovery code</PageTitle>
+
+<section class="card narrow">
+    <p class="eyebrow">Account recovery</p>
+    <h1>Recovery code</h1>
+    @if (Error is not null)
+    {
+        <p role="alert" class="notice">The recovery code could not be verified.</p>
+    }
+    <form method="post" action="/auth/recovery">
+        <AntiforgeryToken />
+        <label for="code">One unused recovery code</label>
+        <input id="code" name="code" autocomplete="off" required maxlength="100" />
+        <button type="submit" class="button">Use code</button>
+    </form>
+    <p><a href="/mfa">Use authenticator instead</a></p>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+}

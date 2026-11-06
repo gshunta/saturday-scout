@@ -1,44 +1,108 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Antiforgery;
 using SaturdayScout.Api;
 using SaturdayScout.Application;
 using SaturdayScout.Infrastructure;
+using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
-var connection = builder.Configuration["SATURDAY_SCOUT_DB_CONNECTION"];
-if (string.IsNullOrWhiteSpace(connection))
-    throw new InvalidOperationException("SATURDAY_SCOUT_DB_CONNECTION is required.");
-builder.Services.AddDbContext<SaturdayScoutDbContext>(options => options.UseNpgsql(connection));
+builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
+builder.Services.AddScoped<IAuthorizationHandler, LeagueCommissionerAuthorizationHandler>();
 builder.Services.AddScoped<IScoutStore, ScoutStore>();
+builder.Services.AddScoped<IAdminScoutService, AdminScoutStore>();
 builder.Services.AddScoped<IScoutService, ScoutService>();
 builder.Services.AddScoped<IResultImportService>(sp => sp.GetRequiredService<IScoutStore>());
 
-const string authScheme = "SaturdayScout";
-builder.Services.AddAuthentication(authScheme).AddScheme<AuthenticationSchemeOptions, DenyAuthHandler>(authScheme, _ => { });
 if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, DevAuthHandler>("Development", _ => { });
+    builder.Services.AddAuthentication().AddPolicyScheme("ScoutDevOrIdentity", null, options =>
+        options.ForwardDefaultSelector = context => context.Request.Headers.ContainsKey("X-Dev-Subject")
+            ? "Development" : IdentityConstants.ApplicationScheme);
     builder.Services.PostConfigure<AuthenticationOptions>(options =>
     {
-        options.DefaultAuthenticateScheme = "Development";
-        options.DefaultChallengeScheme = "Development";
+        options.DefaultAuthenticateScheme = "ScoutDevOrIdentity";
+        options.DefaultChallengeScheme = "ScoutDevOrIdentity";
     });
 }
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("Player", policy => policy.RequireAuthenticatedUser().RequireRole(ScoutRoles.Player));
+    options.AddPolicy("SystemAdministrator", policy => policy.RequireAuthenticatedUser()
+        .AddRequirements(new SystemAdministratorMfaRequirement()));
+    options.AddPolicy("LeagueCommissioner", policy => policy.RequireAuthenticatedUser()
+        .RequireRole(ScoutRoles.LeagueCommissioner).AddRequirements(new LeagueCommissionerRequirement()));
+});
 
 var app = builder.Build();
 app.UseExceptionHandler();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
+else app.UseHsts();
 app.UseHttpsRedirection();
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/v1") &&
+        context.Request.Method is not ("GET" or "HEAD" or "OPTIONS" or "TRACE") &&
+        context.User.Identity?.AuthenticationType == IdentityConstants.ApplicationScheme)
+    {
+        if (!await context.RequestServices.GetRequiredService<IAntiforgery>().IsRequestValidAsync(context))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+    }
+    await next(context);
+});
+app.UseAntiforgery();
 app.UseAuthorization();
 
-var api = app.MapGroup("/api/v1").RequireAuthorization();
+var authApi = app.MapGroup("/api/v1/auth").RequireAuthorization();
+authApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) =>
+    Results.Ok(new { token = antiforgery.GetAndStoreTokens(context).RequestToken }));
+var api = app.MapGroup("/api/v1");
+var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization("SystemAdministrator");
+adminApi.MapGet("/dashboard", async (IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetDashboardAsync(ct)));
+adminApi.MapGet("/games", async ([AsParameters] AdminGameQuery query, IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.BrowseGamesAsync(query, ct)));
+adminApi.MapGet("/leagues", async (IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetLeaguesAsync(ct)));
+adminApi.MapGet("/commissioners", async (IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetEligibleCommissionersAsync(ct)));
+adminApi.MapPost("/leagues", async (CreateAdminLeagueRequest request, IAdminScoutService service, CancellationToken ct) =>
+{
+    var league = await service.CreateLeagueAsync(request, ct);
+    return Results.Created($"/api/v1/admin/leagues/{league.Id}", league);
+});
+adminApi.MapGet("/slates", async (IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetSlatesAsync(ct)));
+adminApi.MapPost("/slates", async (CreateAdminSlateRequest request, IAdminScoutService service, CancellationToken ct) =>
+{
+    var slate = await service.CreateSlateAsync(request, ct);
+    return Results.Created($"/api/v1/admin/slates/{slate.Id}", slate);
+});
+adminApi.MapGet("/slates/{slateId:guid}", async (Guid slateId, IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetSlateAsync(slateId, ct)));
+adminApi.MapPut("/slates/{slateId:guid}/games", async (Guid slateId, UpdateAdminSlateGamesRequest request,
+    IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.UpdateSlateGamesAsync(slateId, request, ct)));
+adminApi.MapPost("/slates/{slateId:guid}/randomize", async (Guid slateId, RandomizeAdminSlateRequest request,
+    IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.RandomizeSlateGamesAsync(slateId, request, ct)));
+adminApi.MapPost("/slates/{slateId:guid}/publish", async (Guid slateId, PublishAdminSlateRequest request,
+    IAdminScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.PublishSlateAsync(slateId, request, ct)));
+if (app.Environment.IsDevelopment()) api.RequireAuthorization();
+else api.RequireAuthorization("Player");
 api.MapGet("/games", async (string sport, int season, int week, int? page, int? pageSize,
     HttpContext http, IScoutService service, CancellationToken ct) =>
     Results.Ok(await service.BrowseGamesAsync(Actor(http), sport, season, week, page ?? 1, pageSize ?? 50, ct)));

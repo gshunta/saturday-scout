@@ -1,10 +1,10 @@
 # Saturday Scout — Backend Implementation Plan
 
-**Status:** Phases 1–4 implemented; Phase 4 awaiting review
+**Status:** Phases 1–4, Admin Sprint 1B/1C, and Admin Sprint 2 implemented. The Admin portal includes Identity/MFA, dashboard metrics, a college football games browser, and league-specific slate draft/randomize/publish workflows. No Sprint 1C or 2 migration was generated or applied. See `docs/admin-portal/` and `docs/api-v1.md`.
 **Scope:** MVP backend, starting at Step 2 (domain model)  
 **Stack:** .NET 10, ASP.NET Core, EF Core 10, PostgreSQL 17, xUnit, Docker Compose  
 **Repository:** Existing `saturday-scout` repository  
-**Last updated:** 2026-10-30
+**Last updated:** 2026-11-02
 
 ## 0. Objective and MVP boundaries
 
@@ -202,7 +202,7 @@ Use request/response DTOs, dependency injection, cancellation tokens, explicit v
 | GET | `/api/v1/leagues/{leagueId}/leaderboard?scope=college&season=2026` | Member | Standings |
 | POST | `/api/v1/admin/imports/{sport}` | Admin | Trigger controlled import (later phase) |
 
-**Identity design:** Do not accept a `userId` in normal pick-write requests. Resolve it from authenticated claims. Until authentication is implemented, use a **development-only fake auth handler**, enabled solely in Development and disabled in all deployed environments. Never expose administrative write endpoints anonymously.
+**Identity design (revised 2026-11-01):** Do not accept a `userId` in normal pick-write requests. Resolve it from an authenticated GUID. The current development-only fake auth handler is transitional and must remain unavailable in Production. ASP.NET Core Identity with PostgreSQL is the approved target; see `docs/authentication-architecture.md` before changing the schema or user relationships.
 
 **Concurrency:** Use transactions and optimistic concurrency. A pick save arriving after lock must fail even if the client had loaded the page before lock. Return `409 Conflict` for concurrent edits and appropriate `400/403/404/422` responses for invalid requests.
 
@@ -302,16 +302,30 @@ Use provider-neutral DTOs. Infrastructure adapters map provider responses into t
 
 ---
 
-## Phase 7 — Authentication, authorization, and security hardening
+## Admin Sprint 1 — Identity and secure administration foundation
 
-1. Implement standards-based token authentication suitable for a SwiftUI client; evaluate Sign in with Apple identity validation and app session issuance before choosing exact flow.
-2. Map authenticated external subject IDs to internal users; never authorize from display names or client-supplied IDs.
-3. Enforce league membership and commissioner/admin roles on all routes.
-4. Add request limits, input validation, structured logging, health checks, secret management, and environment-specific CORS.
-5. Ensure dev fake auth is impossible to enable in Production.
-6. Add authorization tests including cross-league access, commissioner-only actions, and pick editing after lock.
+**Migration gate completed locally (2026-11-01):** The owner approved the additive plan and later approved execution. A fresh backup was restored to a disposable database before both Identity migrations were applied to local development. See `docs/identity-migration-review.md`. Any other environment needs its own backup, review, and approval.
 
-**Acceptance criteria:** Anonymous/unauthorized users cannot read private league data or submit picks; secrets absent from source; production config fails closed.
+**Admin Sprint 1B (2026-11-01):** Implemented the .NET 10 Interactive Server Admin foundation in `src/SaturdayScout.Admin`, shared Identity cookie and Data Protection configuration, administrator password/TOTP/recovery login, protected dashboard, restricted first-admin bootstrap command, and disposable PostgreSQL authentication tests. No administrator was created and no new migration was generated or applied. See `docs/admin-portal/authentication-implementation.md` and `docs/admin-portal/local-development.md`.
+
+**Admin Sprint 1C (2026-11-02):** Implemented the live dashboard metrics, server-filtered/paginated college games browser, league-specific college football slate draft workflow, MFA-protected `/api/v1/admin` endpoints, and per-operation MFA authorization in the Blazor server application-service facade. Draft saves preserve the existing 0–10 partial-draft rule and use PostgreSQL `xmin` optimistic concurrency; 10 eligible games are marked ready for later publishing review. No migration was generated/applied, imported games were not modified, and publication was not added. Conference filtering is unavailable because the current Team schema has no conference field. See `docs/admin-portal/sprint-1c.md` and `docs/api-v1.md`.
+
+**Admin Sprint 2 (2026-11-02):** Added ten-game randomized selection, admin MFA-protected slate publication using the existing domain `Publish` rules, and UTC lock-time UI. Draft updates and publication serialize with row locks and compare PostgreSQL `xmin`; stale and duplicate publish attempts conflict. Submitted picks and published slates remain immutable, and the commissioner API remains unchanged. Tests cover random eligibility/count, publication validation, auth/antiforgery, and concurrent duplicate publication. No schema migration or imported-data update was needed. See `docs/admin-portal/sprint-2.md`.
+
+**Admin Sprint 1D next:** Add invitations/email and password reset, audited privileged actions, league management, and the same-origin API gateway/interoperability test. Protect and validate production Data Protection storage and administrator recovery before deployment.
+
+1. Add ASP.NET Core Identity persistence in the existing PostgreSQL database with GUID Identity IDs equal to domain `Users.Id`. Use a separate `auth` schema, a reviewed EF Core migration, and a one-to-one FK; preserve every existing domain FK and imported game row.
+2. Introduce `SystemAdministrator`, `LeagueCommissioner`, and `Player` Identity roles. Keep league-scoped membership checks as the authority for league actions. Add explicit admin and resource-based policies; require completed MFA for Production administrator actions.
+3. Implement invitation-only account creation, confirmed email, password reset, administrator TOTP enrollment and recovery, one-time operator bootstrap, secure cookie sessions, antiforgery, endpoint rate limits, and account lockout. No public registration or hardcoded bootstrap credential.
+4. Establish the separately hosted Blazor Server portal behind a common-origin proxy with the API. Configure a shared cookie scheme and persistent Data Protection keys; propagate the user's cookie and antiforgery proof on portal-to-API calls. Keep mobile bearer authentication out of this sprint.
+5. Add append-only audit records for privileged changes and tests for migration preservation, invitation lifecycle, lockout, MFA, cookie/antiforgery behavior, cross-league authorization, and Production rejection of the Development header.
+6. Deploy only after email delivery, public origin, key storage, backup, and admin recovery are configured. Review migration SQL and pre/post counts before touching the live database.
+
+**Acceptance criteria:** All security criteria in `docs/authentication-architecture.md` pass; no user ID or foreign key changes unexpectedly; no anonymous admin write, public signup, or mobile token endpoint; secrets absent from source; Production fails closed.
+
+## Later authentication work — SwiftUI
+
+Design and implement an explicit native bearer and refresh flow against the same Identity GUID and domain user. Review token format, revocation, device storage, and route scheme selection separately. Do not enable Identity's built-in token endpoint as an incidental Sprint 1 feature.
 
 ---
 
