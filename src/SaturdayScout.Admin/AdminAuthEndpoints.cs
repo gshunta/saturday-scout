@@ -27,27 +27,38 @@ public static class AdminAuthEndpoints
 
     private static async Task<IResult> Login(HttpContext context, IAntiforgery antiforgery,
         UserManager<ApplicationUser> users, SignInManager<ApplicationUser> signIn,
-        SaturdayScoutDbContext domain)
+        SaturdayScoutDbContext domain, ILogger<Program> logger, IWebHostEnvironment environment)
     {
         if (!await antiforgery.IsRequestValidAsync(context)) return Results.BadRequest();
         var form = await context.Request.ReadFormAsync();
         var email = form["email"].ToString().Trim();
         var password = form["password"].ToString();
         if (email.Length is < 3 or > 256 || password.Length is < 1 or > 1024)
-            return LoginFailed();
+            return LoginFailed(logger, environment, "invalid_input");
         var user = await users.FindByEmailAsync(email);
-        if (user is null || !user.EmailConfirmed || !await users.IsInRoleAsync(user, ScoutRoles.SystemAdministrator) ||
-            await ScoutIdentityServices.IsDisabledAsync(users, user) ||
-            !await domain.Users.AsNoTracking().AnyAsync(x => x.Id == user.Id)) return LoginFailed();
+        if (user is null) return LoginFailed(logger, environment, "identity_user_missing");
+        if (!user.EmailConfirmed) return LoginFailed(logger, environment, "email_unconfirmed");
+        if (!await users.IsInRoleAsync(user, ScoutRoles.SystemAdministrator))
+            return LoginFailed(logger, environment, "administrator_role_missing");
+        if (await ScoutIdentityServices.IsDisabledAsync(users, user))
+            return LoginFailed(logger, environment, "account_disabled");
+        if (!await domain.Users.AsNoTracking().AnyAsync(x => x.Id == user.Id))
+            return LoginFailed(logger, environment, "domain_user_missing");
 
         // An administrator must never skip TOTP through Identity's remembered-client cookie.
         await signIn.ForgetTwoFactorClientAsync();
         var result = await signIn.PasswordSignInAsync(user, password, isPersistent: false, lockoutOnFailure: true);
         if (result.RequiresTwoFactor) return Results.Redirect("/mfa");
-        if (!result.Succeeded || await users.GetTwoFactorEnabledAsync(user))
+        if (!result.Succeeded)
         {
-            if (result.Succeeded) await signIn.SignOutAsync();
-            return LoginFailed();
+            var category = result.IsLockedOut ? "identity_account_locked_out" :
+                result.IsNotAllowed ? "identity_signin_not_allowed" : "identity_password_or_signin_rejected";
+            return LoginFailed(logger, environment, category);
+        }
+        if (await users.GetTwoFactorEnabledAsync(user))
+        {
+            await signIn.SignOutAsync();
+            return LoginFailed(logger, environment, "identity_two_factor_challenge_missing");
         }
         if (await users.GetAuthenticatorKeyAsync(user) is null)
         {
@@ -55,11 +66,19 @@ public static class AdminAuthEndpoints
             if (!reset.Succeeded)
             {
                 await signIn.SignOutAsync();
-                return LoginFailed();
+                return LoginFailed(logger, environment, "authenticator_enrollment_setup_failed");
             }
         }
-        await signIn.SignInWithClaimsAsync(user, isPersistent: false,
-            [ScoutIdentityServices.PasswordClaim(), ScoutIdentityServices.AuthenticationTime()]);
+        try
+        {
+            await signIn.SignInWithClaimsAsync(user, isPersistent: false,
+                [ScoutIdentityServices.PasswordClaim(), ScoutIdentityServices.AuthenticationTime()]);
+        }
+        catch
+        {
+            LogLoginFailure(logger, environment, "admin_cookie_issuance_failed");
+            throw;
+        }
         return Results.Redirect("/enroll");
     }
 
@@ -139,5 +158,15 @@ public static class AdminAuthEndpoints
         await users.IsInRoleAsync(user, ScoutRoles.SystemAdministrator) &&
         await domain.Users.AsNoTracking().AnyAsync(x => x.Id == user.Id);
 
-    private static IResult LoginFailed() => Results.Redirect("/login?error=1");
+    private static IResult LoginFailed(ILogger logger, IWebHostEnvironment environment, string category)
+    {
+        LogLoginFailure(logger, environment, category);
+        return Results.Redirect("/login?error=1");
+    }
+
+    private static void LogLoginFailure(ILogger logger, IWebHostEnvironment environment, string category)
+    {
+        if (environment.IsDevelopment())
+            logger.LogWarning("Administrator login rejected. Failure category: {FailureCategory}", category);
+    }
 }

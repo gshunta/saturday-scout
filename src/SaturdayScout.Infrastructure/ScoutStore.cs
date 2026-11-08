@@ -42,6 +42,41 @@ public sealed class ScoutStore(SaturdayScoutDbContext db) : IScoutStore
         sheet.SubmittedUtc, sheet.Version, sheet.Picks.OrderBy(x => x.ConfidenceRank)
             .Select(x => new PickDto(x.GameId, x.SelectedTeamId, x.ConfidenceRank)).ToArray());
 
+    public async Task<IReadOnlyList<LeagueDto>> GetMyLeaguesAsync(Guid actorId, CancellationToken ct) =>
+        await (from member in db.LeagueMembers.AsNoTracking()
+               join league in db.Leagues.AsNoTracking() on member.LeagueId equals league.Id
+               where member.UserId == actorId
+               orderby league.Name, league.Id
+               select new LeagueDto(league.Id, league.Name, league.CommissionerUserId)).ToListAsync(ct);
+
+    public async Task<PlayerSlateDto?> GetActiveCollegeSlateAsync(Guid actorId, Guid leagueId, CancellationToken ct)
+    {
+        await RequireMember(actorId, leagueId, ct);
+        var slates = await db.WeeklySlates.AsNoTracking()
+            .Where(x => x.LeagueId == leagueId && x.Sport == Sport.CollegeFootball && x.Status != SlateStatus.Draft)
+            .ToListAsync(ct);
+        if (slates.Count == 0) return null;
+
+        var now = await DbNow(ct);
+        var slate = slates.Where(x => x.Status == SlateStatus.Published && x.LockUtc > now)
+            .OrderBy(x => x.LockUtc).ThenByDescending(x => x.Season).ThenBy(x => x.Week).FirstOrDefault()
+            ?? slates.OrderByDescending(x => x.Season).ThenByDescending(x => x.Week).First();
+
+        var games = await (from slateGame in db.SlateGames.AsNoTracking()
+                           join game in db.Games.AsNoTracking() on slateGame.GameId equals game.Id
+                           join home in db.Teams.AsNoTracking() on game.HomeTeamId equals home.Id
+                           join away in db.Teams.AsNoTracking() on game.AwayTeamId equals away.Id
+                           where slateGame.SlateId == slate.Id
+                           orderby slateGame.DisplayOrder
+                           select new PlayerSlateGameDto(slateGame.DisplayOrder, game.Id,
+                               home.Id, home.Name, home.Abbreviation, away.Id, away.Name, away.Abbreviation,
+                               game.KickoffUtc, game.Status.ToString(), game.HomeScore, game.AwayScore))
+            .ToListAsync(ct);
+
+        return new PlayerSlateDto(slate.Id, slate.LeagueId, slate.Season, slate.Week,
+            slate.Status.ToString(), slate.LockUtc, slate.PublishedUtc, games);
+    }
+
     public async Task<IReadOnlyList<GameDto>> BrowseGamesAsync(Guid actorId, string sport, int season, int week,
         int page, int pageSize, CancellationToken ct)
     {

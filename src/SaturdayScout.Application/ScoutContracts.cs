@@ -16,6 +16,11 @@ public sealed record MemberDto(Guid UserId, string DisplayName, string Role, Dat
 public sealed record SlateGameDto(int DisplayOrder, GameDto Game);
 public sealed record SlateDto(Guid Id, Guid LeagueId, string Sport, int Season, int Week,
     string Status, DateTimeOffset? LockUtc, DateTimeOffset? PublishedUtc, IReadOnlyList<SlateGameDto> Games);
+public sealed record PlayerSlateGameDto(int DisplayOrder, Guid GameId, Guid HomeTeamId, string HomeTeam,
+    string HomeAbbreviation, Guid AwayTeamId, string AwayTeam, string AwayAbbreviation,
+    DateTimeOffset KickoffUtc, string Status, int? HomeScore, int? AwayScore);
+public sealed record PlayerSlateDto(Guid Id, Guid LeagueId, int Season, int Week, string Status,
+    DateTimeOffset? LockUtc, DateTimeOffset? PublishedUtc, IReadOnlyList<PlayerSlateGameDto> Games);
 public sealed record PickDto(Guid GameId, Guid SelectedTeamId, int ConfidenceRank);
 public sealed record PickSheetDto(Guid Id, Guid SlateId, string Status, DateTimeOffset? SubmittedUtc,
     long Version, IReadOnlyList<PickDto> Picks);
@@ -38,6 +43,8 @@ public interface IResultImportService
 
 public interface IScoutService
 {
+    Task<IReadOnlyList<LeagueDto>> GetMyLeaguesAsync(Guid actorId, CancellationToken ct);
+    Task<PlayerSlateDto?> GetActiveCollegeSlateAsync(Guid actorId, Guid leagueId, CancellationToken ct);
     Task<IReadOnlyList<GameDto>> BrowseGamesAsync(Guid actorId, string sport, int season, int week, int page, int pageSize, CancellationToken ct);
     Task<LeagueDto> CreateLeagueAsync(Guid actorId, CreateLeagueRequest request, CancellationToken ct);
     Task<LeagueDto> GetLeagueAsync(Guid actorId, Guid leagueId, CancellationToken ct);
@@ -124,6 +131,12 @@ public static class ScoutSport
 
 public sealed class ScoutService(IScoutStore store) : IScoutService
 {
+    public Task<IReadOnlyList<LeagueDto>> GetMyLeaguesAsync(Guid actorId, CancellationToken ct) =>
+        store.GetMyLeaguesAsync(actorId, ct);
+
+    public Task<PlayerSlateDto?> GetActiveCollegeSlateAsync(Guid actorId, Guid leagueId, CancellationToken ct) =>
+        store.GetActiveCollegeSlateAsync(actorId, leagueId, ct);
+
     public Task<IReadOnlyList<GameDto>> BrowseGamesAsync(Guid actorId, string sport, int season, int week, int page, int pageSize, CancellationToken ct)
     {
         ScoutSport.Parse(sport);

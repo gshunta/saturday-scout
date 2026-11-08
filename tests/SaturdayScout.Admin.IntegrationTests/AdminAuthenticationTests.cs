@@ -2,12 +2,16 @@ using System.Net;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
+using SaturdayScout.Admin;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 using Xunit;
@@ -17,6 +21,43 @@ namespace SaturdayScout.Admin.IntegrationTests;
 public sealed class AdminAuthenticationTests
 {
     private const string Password = "Disposable-test-Password-123!";
+
+    [Fact]
+    public async Task InteractiveAdminHostStartsWithAuthenticationStateAndPortalFacadeRegistered()
+    {
+        var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-admin-startup-{Guid.NewGuid():N}");
+        try
+        {
+            using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Development");
+                builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+                builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
+            });
+
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("https://localhost"),
+                AllowAutoRedirect = false
+            });
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/login")).StatusCode);
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            Assert.IsType<AdminRevalidatingAuthenticationStateProvider>(
+                scope.ServiceProvider.GetRequiredService<AuthenticationStateProvider>());
+            Assert.IsType<AdminPortalService>(scope.ServiceProvider.GetRequiredService<AdminPortalService>());
+            var schemes = scope.ServiceProvider.GetRequiredService<IAuthenticationSchemeProvider>();
+            Assert.Equal(IdentityConstants.ApplicationScheme,
+                (await schemes.GetDefaultAuthenticateSchemeAsync())?.Name);
+            Assert.Equal(IdentityConstants.ApplicationScheme,
+                scope.ServiceProvider.GetRequiredService<SignInManager<ApplicationUser>>().AuthenticationScheme);
+            Assert.Null(await schemes.GetSchemeAsync("SaturdayScout.Player"));
+        }
+        finally
+        {
+            if (Directory.Exists(keyPath)) Directory.Delete(keyPath, recursive: true);
+        }
+    }
 
     [Fact]
     public void ProductionRequiresSharedKeyStorage()
@@ -137,7 +178,12 @@ public sealed class AdminAuthenticationTests
     {
         await using var database = await AdminTestDatabase.CreateAsync();
         await database.BootstrapAsync("admin@example.test", Password);
-        using var factory = database.Factory();
+        using var diagnostics = new CapturingLoggerProvider();
+        using var factory = database.Factory().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.ConfigureLogging(logging => logging.AddProvider(diagnostics));
+        });
         using var client = Client(factory);
         for (var attempt = 0; attempt < 5; attempt++)
         {
@@ -145,6 +191,11 @@ public sealed class AdminAuthenticationTests
                 ("email", "admin@example.test"), ("password", "Wrong-Password-123!"));
             Assert.Equal("/login?error=1", response.Headers.Location?.OriginalString);
         }
+        Assert.Contains(diagnostics.Messages, message =>
+            message.Contains("identity_password_or_signin_rejected", StringComparison.Ordinal));
+        Assert.DoesNotContain(diagnostics.Messages, message =>
+            message.Contains("Wrong-Password-123!", StringComparison.Ordinal) ||
+            message.Contains("admin@example.test", StringComparison.Ordinal));
         Assert.Equal(HttpStatusCode.TooManyRequests,
             (await PostFormAsync(client, "/login", "/auth/login",
                 ("email", "admin@example.test"), ("password", "Wrong-Password-123!"))).StatusCode);
@@ -200,6 +251,26 @@ public sealed class AdminAuthenticationTests
         var values = fields.Select(x => new KeyValuePair<string, string>(x.Name, x.Value)).ToList();
         values.Add(new("__RequestVerificationToken", WebUtility.HtmlDecode(match.Groups[1].Value)));
         return await client.PostAsync(action, new FormUrlEncodedContent(values));
+    }
+}
+
+internal sealed class CapturingLoggerProvider : ILoggerProvider
+{
+    private readonly List<string> messages = [];
+    public IReadOnlyList<string> Messages { get { lock (messages) return messages.ToArray(); } }
+    public ILogger CreateLogger(string categoryName) => new CapturingLogger(this);
+    public void Dispose() { }
+
+    private sealed class CapturingLogger(CapturingLoggerProvider owner) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (!IsEnabled(logLevel)) return;
+            lock (owner.messages) owner.messages.Add(formatter(state, exception));
+        }
     }
 }
 

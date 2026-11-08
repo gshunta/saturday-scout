@@ -40,6 +40,8 @@ builder.Services.AddHttpClient<IPlayerApiClient, PlayerApiClient>((services, cli
         client.BaseAddress = origin;
     client.Timeout = TimeSpan.FromSeconds(20);
 });
+builder.Services.AddScoped<PlayerPortalService>();
+builder.Services.AddScoped<PlayerLeagueSelectionState>();
 builder.Services.AddAuthentication(options =>
     {
         options.DefaultAuthenticateScheme = PlayerAuthDefaults.Scheme;

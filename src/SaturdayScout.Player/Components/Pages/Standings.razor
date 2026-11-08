@@ -1,9 +1,137 @@
 @page "/standings"
 @attribute [Authorize(Policy = "Player")]
+@rendermode InteractiveServer
+@inject PlayerPortalService Portal
+@inject PlayerLeagueSelectionState LeagueState
 
 <PageTitle>Standings · Saturday Scout</PageTitle>
 <section class="page-card" aria-labelledby="page-title">
     <p class="eyebrow">League</p>
     <h1 id="page-title">Standings</h1>
-    <p class="muted">League standings will appear here when you select a league.</p>
+    @if (_loading)
+    {
+        <p class="muted" role="status">Loading standings…</p>
+    }
+    else if (_error is not null)
+    {
+        <p class="notice error" role="alert">@_error</p>
+    }
+    else if (LeagueState.Leagues.Count == 0)
+    {
+        <div class="empty-card" role="status">
+            <h2>No league memberships</h2>
+            <p>Join a private league to view standings.</p>
+            <a class="primary-link" href="/league">View leagues</a>
+        </div>
+    }
+    else if (_leaderboard is null)
+    {
+        <div class="empty-card" role="status">
+            <h2>No standings available</h2>
+            <p>There are no standings for the current college football season yet.</p>
+        </div>
+    }
+    else
+    {
+        <div class="picks-meta">
+            <div>
+                <strong>@LeagueState.SelectedLeague?.Name</strong>
+                <span>@_leaderboard.Season college season</span>
+            </div>
+            @if (_leaderboard.Week is { } week)
+            {
+                <span class="status-pill">Week @week</span>
+            }
+        </div>
+        @if (_leaderboard.Entries.Count == 0)
+        {
+            <div class="empty-card" role="status"><p>No league players are available in the standings.</p></div>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="standings-table">
+                    <caption class="sr-only">@LeagueState.SelectedLeague?.Name standings for season @_leaderboard.Season</caption>
+                    <thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Total points</th>@if (_weeklyByPlayer.Count > 0){<th scope="col">Week points</th>}</tr></thead>
+                    <tbody>
+                        @{ var position = 0; }
+                        @foreach (var entry in _leaderboard.Entries)
+                        {
+                            position++;
+                            <tr>
+                                <td>@position</td>
+                                <th scope="row">@entry.DisplayName</th>
+                                <td>@entry.Points</td>
+                                @if (_weeklyByPlayer.Count > 0)
+                                {
+                                    <td>@(_weeklyByPlayer.TryGetValue(entry.UserId, out var points) ? points : 0)</td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
 </section>
+
+@code {
+    private bool _loading = true;
+    private string? _error;
+    private LeaderboardDto? _leaderboard;
+    private Dictionary<Guid, int> _weeklyByPlayer = [];
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        _leaderboard = null;
+        _weeklyByPlayer = [];
+        var leagues = await LeagueState.RefreshAsync();
+        if (leagues.Outcome != PlayerApiOutcome.Success)
+        {
+            _error = leagues.Message ?? "Your leagues could not be loaded.";
+            _loading = false;
+            return;
+        }
+        if (LeagueState.SelectedLeagueId is not { } leagueId)
+        {
+            _loading = false;
+            return;
+        }
+
+        var activeSlate = await Portal.GetActiveCollegeSlateAsync(leagueId);
+        if (activeSlate.Outcome is not (PlayerApiOutcome.Success or PlayerApiOutcome.NotFound))
+        {
+            _error = activeSlate.Message ?? "The active college week could not be loaded.";
+            _loading = false;
+            return;
+        }
+        var season = activeSlate.Value?.Season ?? DateTimeOffset.UtcNow.Year;
+        var total = await Portal.GetLeaderboardAsync(leagueId, season, null);
+        if (total.Outcome != PlayerApiOutcome.Success || total.Value is null)
+        {
+            _error = total.Message ?? "League standings could not be loaded.";
+            _loading = false;
+            return;
+        }
+        _leaderboard = total.Value;
+
+        if (activeSlate.Value is { } slate)
+        {
+            var weekly = await Portal.GetLeaderboardAsync(leagueId, slate.Season, slate.Week);
+            if (weekly.Outcome == PlayerApiOutcome.Success && weekly.Value is not null)
+                _weeklyByPlayer = weekly.Value.Entries.ToDictionary(x => x.UserId, x => x.Points);
+            else
+                _error = "Weekly points are temporarily unavailable; total standings are shown.";
+        }
+        _loading = false;
+    }
+}

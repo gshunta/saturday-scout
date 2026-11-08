@@ -3,11 +3,7 @@
         <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
             <NotAuthorized>
                 <LayoutView Layout="typeof(Layout.MainLayout)">
-                    <section class="page-card" aria-labelledby="access-heading">
-                        <h1 id="access-heading">Sign in to continue</h1>
-                        <p class="muted">Use your invitation account to access your picks and leagues.</p>
-                        <a class="primary-link" href="/login">Sign in</a>
-                    </section>
+                    <RedirectToLogin />
                 </LayoutView>
             </NotAuthorized>
         </AuthorizeRouteView>

@@ -11,6 +11,7 @@ public enum PlayerApiOutcome
     Success,
     AuthenticationRequired,
     Forbidden,
+    NotFound,
     ValidationFailed,
     Conflict,
     TransientFailure,
@@ -48,7 +49,23 @@ public sealed class PlayerApiClient(
             return new(PlayerApiOutcome.AuthenticationRequired, Message: "A signed-in player session is required.");
 
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", assertions.Issue(principal));
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        HttpResponseMessage response;
+        try
+        {
+            response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            return new(PlayerApiOutcome.TransientFailure,
+                Message: "The connection was interrupted. Check the server state before trying again.");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new(PlayerApiOutcome.TransientFailure,
+                Message: "The request timed out. Check the server state before trying again.");
+        }
+        using (response)
+        {
         if (response.IsSuccessStatusCode)
         {
             if (response.StatusCode == HttpStatusCode.NoContent)
@@ -68,6 +85,8 @@ public sealed class PlayerApiClient(
             return new(PlayerApiOutcome.AuthenticationRequired, Message: "Your session expired. Sign in again.");
         if (response.StatusCode == HttpStatusCode.Forbidden)
             return new(PlayerApiOutcome.Forbidden, Message: "You do not have access to this league or action.");
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return new(PlayerApiOutcome.NotFound);
         if (response.StatusCode == HttpStatusCode.Conflict)
             return new(PlayerApiOutcome.Conflict, Message: "The data changed. Refresh and try again.");
         if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity)
@@ -79,6 +98,7 @@ public sealed class PlayerApiClient(
                 RetryRecommended: request.Method == HttpMethod.Get);
 
         return new(PlayerApiOutcome.Failure, Message: "The request could not be completed.");
+        }
     }
 
     private static async Task<PlayerApiResult<T>> ReadValidationFailureAsync<T>(HttpResponseMessage response,
