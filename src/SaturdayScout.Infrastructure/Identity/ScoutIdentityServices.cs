@@ -104,8 +104,13 @@ public static class ScoutIdentityServices
     public static async Task<bool> IsDisabledAsync(UserManager<ApplicationUser> users, ApplicationUser user) =>
         (await users.GetClaimsAsync(user)).Any(x => x.Type == DisabledClaim && x.Value == "true");
 
-    private static async Task ValidateCookieAsync(
-        Microsoft.AspNetCore.Authentication.Cookies.CookieValidatePrincipalContext context)
+    public static Task ValidateCookieAsync(
+        Microsoft.AspNetCore.Authentication.Cookies.CookieValidatePrincipalContext context) =>
+        ValidateCookieAsync(context, TimeSpan.FromHours(12), IdentityConstants.ApplicationScheme);
+
+    public static async Task ValidateCookieAsync(
+        Microsoft.AspNetCore.Authentication.Cookies.CookieValidatePrincipalContext context,
+        TimeSpan maximumAge, string signOutScheme, string? requiredRole = null)
     {
         if (context.Principal?.Identity?.IsAuthenticated != true) return;
         // Validate the stored stamp without replacing the principal. Rebuilding the
@@ -117,9 +122,10 @@ public static class ScoutIdentityServices
         if (user is not null && user.EmailConfirmed &&
             !await users.IsLockedOutAsync(user) && !await IsDisabledAsync(users, user) &&
             await domain.Users.AsNoTracking().AnyAsync(x => x.Id == user.Id) &&
-            RecentlyAuthenticated(context.Principal, TimeSpan.FromHours(12))) return;
+            (requiredRole is null || await users.IsInRoleAsync(user, requiredRole)) &&
+            RecentlyAuthenticated(context.Principal, maximumAge)) return;
 
         context.RejectPrincipal();
-        await context.HttpContext.SignOutAsync(IdentityConstants.ApplicationScheme);
+        await context.HttpContext.SignOutAsync(signOutScheme);
     }
 }

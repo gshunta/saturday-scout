@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using SaturdayScout.Application;
 using SaturdayScout.Domain;
 using SaturdayScout.Infrastructure.Persistence;
 
@@ -11,9 +12,73 @@ namespace SaturdayScout.Infrastructure.Identity;
 public sealed class AccountProvisioningService(
     SaturdayScoutDbContext domainDb,
     ScoutIdentityDbContext identityDb,
-    UserManager<ApplicationUser> users)
+    UserManager<ApplicationUser> users,
+    IScoutService? scout = null)
 {
     private const string BootstrapMarkerClaim = "saturday_scout:bootstrap_admin";
+
+    public async Task<Guid> ProvisionDevelopmentPlayerAsync(string email, string displayName, string password,
+        Guid leagueId, Guid commissionerUserId, bool operatorApproved, bool emailOwnershipConfirmed,
+        CancellationToken ct)
+    {
+        if (!operatorApproved || !emailOwnershipConfirmed)
+            throw new InvalidOperationException("Explicit local operator and email ownership confirmation are required.");
+        if (string.IsNullOrWhiteSpace(email) || email.Length > 256 ||
+            string.IsNullOrWhiteSpace(displayName) || displayName.Length > 120 ||
+            string.IsNullOrWhiteSpace(password) || leagueId == Guid.Empty || commissionerUserId == Guid.Empty)
+            throw new ArgumentException("Valid player details, league, commissioner, and password are required.");
+
+        identityDb.Database.SetDbConnection(domainDb.Database.GetDbConnection(), contextOwnsConnection: false);
+        await using var tx = await domainDb.Database.BeginTransactionAsync(ct);
+        await domainDb.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(789352107)", ct);
+        await identityDb.Database.UseTransactionAsync(tx.GetDbTransaction(), ct);
+        try
+        {
+            if (!await domainDb.Leagues.AsNoTracking().AnyAsync(x => x.Id == leagueId, ct))
+                throw new InvalidOperationException("The selected development league does not exist.");
+            if (!await domainDb.LeagueMembers.AsNoTracking().AnyAsync(x => x.LeagueId == leagueId &&
+                    x.UserId == commissionerUserId && x.Role == MembershipRole.Commissioner, ct))
+                throw new InvalidOperationException("The selected user is not the league commissioner.");
+            if (await users.FindByEmailAsync(email.Trim()) is not null)
+                throw new InvalidOperationException("An account already uses this email.");
+
+            var id = Guid.NewGuid();
+            var externalSubjectId = $"identity:{id:N}";
+            domainDb.Users.Add(new User(id, displayName.Trim(), externalSubjectId, email.Trim()));
+            await domainDb.SaveChangesAsync(ct);
+
+            var identityUser = new ApplicationUser
+            {
+                Id = id,
+                UserName = email.Trim(),
+                Email = email.Trim()
+            };
+            var created = await users.CreateAsync(identityUser, password);
+            if (!created.Succeeded)
+                throw new InvalidOperationException("Player account creation failed: " +
+                    string.Join(", ", created.Errors.Select(x => x.Code)));
+
+            var assigned = await users.AddToRoleAsync(identityUser, ScoutRoles.Player);
+            if (!assigned.Succeeded)
+                throw new InvalidOperationException("Player role assignment failed.");
+
+            var confirmationToken = await users.GenerateEmailConfirmationTokenAsync(identityUser);
+            var confirmed = await users.ConfirmEmailAsync(identityUser, confirmationToken);
+            if (!confirmed.Succeeded)
+                throw new InvalidOperationException("Player email confirmation failed.");
+
+            if (scout is null)
+                throw new InvalidOperationException("League membership provisioning is not available in this host.");
+            await scout.AddMemberAsync(commissionerUserId, leagueId,
+                new AddMemberRequest(externalSubjectId), ct);
+            await tx.CommitAsync(ct);
+            return id;
+        }
+        finally
+        {
+            await identityDb.Database.UseTransactionAsync(null, ct);
+        }
+    }
 
     public async Task<Guid> BootstrapFirstAdministratorAsync(string email, string displayName,
         string password, bool operatorApproved, CancellationToken ct)

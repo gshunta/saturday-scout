@@ -14,6 +14,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddPlayerAssertionAuthentication(builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddScoped<IAuthorizationHandler, LeagueCommissionerAuthorizationHandler>();
 builder.Services.AddScoped<IScoutStore, ScoutStore>();
@@ -25,8 +26,13 @@ if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, DevAuthHandler>("Development", _ => { });
     builder.Services.AddAuthentication().AddPolicyScheme("ScoutDevOrIdentity", null, options =>
-        options.ForwardDefaultSelector = context => context.Request.Headers.ContainsKey("X-Dev-Subject")
-            ? "Development" : IdentityConstants.ApplicationScheme);
+        options.ForwardDefaultSelector = context =>
+        {
+            if (context.Request.Headers.ContainsKey("X-Dev-Subject")) return "Development";
+            if (context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                return PlayerAssertionDefaults.Scheme;
+            return IdentityConstants.ApplicationScheme;
+        });
     builder.Services.PostConfigure<AuthenticationOptions>(options =>
     {
         options.DefaultAuthenticateScheme = "ScoutDevOrIdentity";
@@ -35,7 +41,8 @@ if (builder.Environment.IsDevelopment())
 }
 builder.Services.AddAuthorization(options =>
 {
-    options.AddPolicy("Player", policy => policy.RequireAuthenticatedUser().RequireRole(ScoutRoles.Player));
+    options.AddPolicy("Player", policy => policy.RequireAuthenticatedUser().RequireRole(ScoutRoles.Player)
+        .AddAuthenticationSchemes(PlayerAssertionDefaults.ApiUserScheme));
     options.AddPolicy("SystemAdministrator", policy => policy.RequireAuthenticatedUser()
         .AddRequirements(new SystemAdministratorMfaRequirement()));
     options.AddPolicy("LeagueCommissioner", policy => policy.RequireAuthenticatedUser()
@@ -103,6 +110,14 @@ adminApi.MapPost("/slates/{slateId:guid}/publish", async (Guid slateId, PublishA
     Results.Ok(await service.PublishSlateAsync(slateId, request, ct)));
 if (app.Environment.IsDevelopment()) api.RequireAuthorization();
 else api.RequireAuthorization("Player");
+api.MapGet("/leagues/me", async (HttpContext http, IScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetMyLeaguesAsync(Actor(http), ct)));
+api.MapGet("/leagues/{leagueId:guid}/slates/active", async (Guid leagueId, HttpContext http,
+    IScoutService service, CancellationToken ct) =>
+{
+    var slate = await service.GetActiveCollegeSlateAsync(Actor(http), leagueId, ct);
+    return slate is null ? Results.NoContent() : Results.Ok(slate);
+});
 api.MapGet("/games", async (string sport, int season, int week, int? page, int? pageSize,
     HttpContext http, IScoutService service, CancellationToken ct) =>
     Results.Ok(await service.BrowseGamesAsync(Actor(http), sport, season, week, page ?? 1, pageSize ?? 50, ct)));

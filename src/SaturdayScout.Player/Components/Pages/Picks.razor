@@ -1,0 +1,486 @@
+@page "/picks"
+@attribute [Authorize(Policy = "Player")]
+@rendermode InteractiveServer
+@inject PlayerPortalService Portal
+@inject PlayerLeagueSelectionState LeagueState
+@inject IJSRuntime JavaScript
+
+<PageTitle>Weekly picks · Saturday Scout</PageTitle>
+<NavigationLock ConfirmExternalNavigation="HasUnsavedChanges" OnBeforeInternalNavigation="BeforeInternalNavigation" />
+<section class="page-card picks-page" aria-labelledby="page-title">
+    <p class="eyebrow">College football</p>
+    <h1 id="page-title">Weekly picks</h1>
+
+    @if (_loading)
+    {
+        <p class="muted" role="status">Loading your published slate…</p>
+    }
+    else if (_error is not null && _slate is null)
+    {
+        <p class="notice error" role="alert">@_error</p>
+    }
+    else if (LeagueState.Leagues.Count == 0)
+    {
+        <div class="empty-card" role="status">
+            <h2>No league memberships</h2>
+            <p>Ask your commissioner to invite you to a private league.</p>
+            <a class="primary-link" href="/league">View leagues</a>
+        </div>
+    }
+    else if (_slate is null)
+    {
+        <div class="empty-card" role="status">
+            <h2>No published slate available</h2>
+            <p>There is no published college football week for @LeagueState.SelectedLeague?.Name yet.</p>
+            <a class="secondary-button" href="/league">Choose another league</a>
+        </div>
+    }
+    else
+    {
+        <div class="picks-meta">
+            <div>
+                <strong>@LeagueState.SelectedLeague?.Name</strong>
+                <span>@_slate.Season · Week @_slate.Week</span>
+            </div>
+            <span class="status-pill">@CurrentStatus</span>
+        </div>
+        <p class="muted">Choose a winner and one confidence value from 1–10 for each game. Each confidence value can be used once.</p>
+
+        @if (_error is not null)
+        {
+            <p class="notice error" role="alert">@_error</p>
+        }
+        @if (_message is not null)
+        {
+            <p class="notice" role="status">@_message</p>
+        }
+        @if (_hasConflict)
+        {
+            <div class="notice error" role="alert">
+                <strong>This pick sheet changed on another session.</strong>
+                <p>Your current selections are preserved here. Choose the server version or explicitly replace it with your selections.</p>
+                <div class="button-row">
+                    <button class="secondary-button" type="button" @onclick="UseServerVersion">Load server version</button>
+                    @if (_latestSheet?.Status != "Submitted" && CanSaveLocal)
+                    {
+                        <button class="primary-button" type="button" @onclick="ReplaceServerVersionAsync">Replace with my picks</button>
+                    }
+                </div>
+            </div>
+        }
+
+        @if (_selections.Count == 0)
+        {
+            <div class="empty-card" role="status">
+                <h2>No games are listed</h2>
+                <p>The published slate currently contains no games.</p>
+            </div>
+        }
+        else
+        {
+            <div class="game-list" aria-label="Published slate games">
+                @foreach (var selection in _selections)
+                {
+                    <article class="game-card" @key="selection.Game.GameId">
+                        <div class="game-card-heading">
+                            <span class="week-chip">Game @selection.Game.DisplayOrder</span>
+                            <span class="game-status">@selection.Game.Status</span>
+                        </div>
+                        <p class="kickoff">@FormatUtc(selection.Game.KickoffUtc)</p>
+                        @if (selection.Game.Status == "Final" && selection.Game.HomeScore is not null && selection.Game.AwayScore is not null)
+                        {
+                            <p class="final-score">Final · @selection.Game.AwayScore – @selection.Game.HomeScore</p>
+                        }
+                        <fieldset disabled="@ReadOnly">
+                            <legend class="sr-only">Pick winner for @selection.Game.AwayTeam at @selection.Game.HomeTeam</legend>
+                            <div class="winner-options">
+                                <label class="winner-option">
+                                    <input type="radio" name="winner-@selection.Game.GameId" value="@selection.Game.AwayTeamId"
+                                           checked="@(selection.SelectedTeamId == selection.Game.AwayTeamId)"
+                                           @onchange="_ => SetWinner(selection, selection.Game.AwayTeamId)" />
+                                    <span>@selection.Game.AwayTeam <small>(@selection.Game.AwayAbbreviation)</small></span>
+                                </label>
+                                <span class="at-sign">at</span>
+                                <label class="winner-option">
+                                    <input type="radio" name="winner-@selection.Game.GameId" value="@selection.Game.HomeTeamId"
+                                           checked="@(selection.SelectedTeamId == selection.Game.HomeTeamId)"
+                                           @onchange="_ => SetWinner(selection, selection.Game.HomeTeamId)" />
+                                    <span>@selection.Game.HomeTeam <small>(@selection.Game.HomeAbbreviation)</small></span>
+                                </label>
+                            </div>
+                        </fieldset>
+                        <div class="confidence-row">
+                            <label for="confidence-@selection.Game.GameId">Confidence</label>
+                            <select id="confidence-@selection.Game.GameId" value="@selection.ConfidenceRank" disabled="@ReadOnly"
+                                    @onchange="args => SetConfidence(selection, args)">
+                                <option value="">Choose 1–10</option>
+                                @for (var rank = 1; rank <= 10; rank++)
+                                {
+                                    <option value="@rank">@rank</option>
+                                }
+                            </select>
+                        </div>
+                    </article>
+                }
+            </div>
+
+            @if (_validation is not null)
+            {
+                <div class="validation-summary" aria-live="polite">
+                    @if (_validation.UnansweredGames > 0)
+                    {
+                        <p>@_validation.UnansweredGames game(s) still need a complete winner and confidence value.</p>
+                    }
+                    @if (_validation.IncompleteRows > 0)
+                    {
+                        <p>Finish or clear the winner and confidence value on each partially filled game before saving.</p>
+                    }
+                    @if (_validation.DuplicateRanks.Count > 0)
+                    {
+                        <p>Confidence values used more than once: @string.Join(", ", _validation.DuplicateRanks).</p>
+                    }
+                    @if (_validation.IsReadyToSubmit)
+                    {
+                        <p class="valid-message">All ten winners and confidence values are ready.</p>
+                    }
+                </div>
+            }
+
+            @if (!ReadOnly)
+            {
+                <div class="picks-actions">
+                    <span class="save-state" role="status">@_saveState</span>
+                    <button class="secondary-button" type="button" disabled="@(!CanAttemptSave || _busy)" @onclick="SaveDraftAsync">Save draft</button>
+                    <button class="primary-button" type="button" disabled="@(!CanAttemptReview || _busy)" @onclick="BeginSubmit">Review submission</button>
+                </div>
+            }
+            else if (_sheet?.Status == "Submitted")
+            {
+                <div class="notice success" role="status">
+                    Pick sheet submitted @FormatUtc(_sheet.SubmittedUtc). This sheet is read-only.
+                </div>
+            }
+            else
+            {
+                <div class="notice" role="status">This slate is locked. The server will not accept additional changes.</div>
+            }
+        }
+    }
+</section>
+
+@if (_showConfirmation && _slate is not null)
+{
+    <div class="modal-backdrop" role="presentation">
+        <section class="submit-confirmation" role="dialog" aria-modal="true" aria-labelledby="submit-heading">
+            <p class="eyebrow">Final review</p>
+            <h2 id="submit-heading">Submit your picks?</h2>
+            <p>After submission, this pick sheet cannot be changed.</p>
+            <ol class="submission-summary">
+                @foreach (var selection in _selections.OrderBy(x => x.ConfidenceRank))
+                {
+                    <li><span>@selection.ConfidenceRank pts</span> @WinnerName(selection) <small>— Game @selection.Game.DisplayOrder</small></li>
+                }
+            </ol>
+            <div class="button-row">
+                <button class="secondary-button" type="button" disabled="@_busy" @onclick="CancelSubmit">Back to picks</button>
+                <button class="primary-button" type="button" disabled="@_busy" @onclick="ConfirmSubmitAsync">@(_busy ? "Submitting…" : "Confirm submission")</button>
+            </div>
+        </section>
+    </div>
+}
+
+@code {
+    private PlayerSlateDto? _slate;
+    private PickSheetDto? _sheet;
+    private PickSheetDto? _latestSheet;
+    private List<PlayerPickSelection> _selections = [];
+    private Dictionary<Guid, (Guid? Team, int? Rank)> _savedValues = [];
+    private PlayerPickValidation? _validation;
+    private bool _loading = true;
+    private bool _busy;
+    private bool _showConfirmation;
+    private bool _hasConflict;
+    private string? _error;
+    private string? _message;
+    private string _saveState = "";
+
+    private bool ReadOnly => _slate is null || _sheet?.Status == "Submitted" || _slate.Status != "Published" ||
+        _slate.LockUtc is null || DateTimeOffset.UtcNow >= _slate.LockUtc;
+    private bool HasUnsavedChanges => _selections.Any(x =>
+        !_savedValues.TryGetValue(x.Game.GameId, out var saved) || saved.Team != x.SelectedTeamId || saved.Rank != x.ConfidenceRank);
+    private bool CanSaveLocal => _validation is { } validation && PlayerPickDraftRules.DraftSaveIssues(validation).Count == 0;
+    private bool CanAttemptSave => !ReadOnly && !_hasConflict && HasUnsavedChanges;
+    private bool CanAttemptReview => !ReadOnly && !_hasConflict;
+    private bool CanSubmit => !_hasConflict && !HasUnsavedChanges && _sheet is not null &&
+        _sheet.Status == "Draft" && _validation?.IsReadyToSubmit == true && !ReadOnly;
+    private string CurrentStatus => _slate is null ? "Unavailable" : PlayerPickStatus.ToLabel(_slate, _sheet, DateTimeOffset.UtcNow);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = _message = null;
+        _slate = null;
+        _sheet = null;
+        var leagues = await LeagueState.RefreshAsync();
+        if (leagues.Outcome != PlayerApiOutcome.Success)
+        {
+            _error = leagues.Message ?? "Your leagues could not be loaded.";
+            _loading = false;
+            return;
+        }
+        if (LeagueState.SelectedLeagueId is not { } leagueId)
+        {
+            _selections = [];
+            _savedValues = [];
+            _validation = null;
+            _loading = false;
+            return;
+        }
+        var slate = await Portal.GetActiveCollegeSlateAsync(leagueId);
+        if (slate.Outcome != PlayerApiOutcome.Success)
+        {
+            _error = slate.Message ?? "The published slate could not be loaded.";
+            _loading = false;
+            return;
+        }
+        _slate = slate.Value;
+        if (_slate is not null) await LoadServerSheetAsync();
+        else
+        {
+            _selections = [];
+            _savedValues = [];
+            _validation = null;
+        }
+        _loading = false;
+    }
+
+    private async Task LoadServerSheetAsync()
+    {
+        if (_slate is null) return;
+        var result = await Portal.GetMySheetAsync(_slate.Id);
+        if (result.Outcome == PlayerApiOutcome.NotFound)
+        {
+            SetSheet(null);
+            return;
+        }
+        if (result.Outcome != PlayerApiOutcome.Success || result.Value is null)
+        {
+            _error = result.Message ?? "Your pick sheet could not be loaded.";
+            return;
+        }
+        SetSheet(result.Value);
+    }
+
+    private void SetSheet(PickSheetDto? sheet)
+    {
+        _sheet = sheet;
+        _selections = PlayerPickDraftRules.Restore(_slate!, sheet).ToList();
+        _savedValues = _selections.ToDictionary(x => x.Game.GameId, x => (x.SelectedTeamId, x.ConfidenceRank));
+        _validation = PlayerPickDraftRules.Validate(_selections);
+        _saveState = sheet is null ? "Not saved" : sheet.Status == "Submitted" ? "Submitted" : "Saved";
+    }
+
+    private void SetWinner(PlayerPickSelection selection, Guid teamId)
+    {
+        if (ReadOnly) return;
+        selection.SelectedTeamId = selection.SelectedTeamId == teamId ? null : teamId;
+        RefreshValidation("Unsaved changes");
+    }
+
+    private void SetConfidence(PlayerPickSelection selection, ChangeEventArgs args)
+    {
+        if (ReadOnly) return;
+        selection.ConfidenceRank = int.TryParse(args.Value?.ToString(), out var rank) && rank is >= 1 and <= 10
+            ? rank : null;
+        RefreshValidation("Unsaved changes");
+    }
+
+    private void RefreshValidation(string state)
+    {
+        _validation = PlayerPickDraftRules.Validate(_selections);
+        _saveState = HasUnsavedChanges ? state : "Saved";
+        _error = null;
+        _message = null;
+    }
+
+    private async Task SaveDraftAsync()
+    {
+        if (_slate is null || ReadOnly || _hasConflict || !HasUnsavedChanges) return;
+        var issues = PlayerPickDraftRules.DraftSaveIssues(_validation ?? PlayerPickDraftRules.Validate(_selections));
+        if (issues.Count > 0)
+        {
+            _saveState = "Not saved";
+            _error = string.Join(" ", issues);
+            _message = null;
+            return;
+        }
+        _busy = true;
+        _saveState = "Saving…";
+        _error = _message = null;
+        var picks = PlayerPickDraftRules.ToPicks(_selections);
+        try
+        {
+            var result = await Portal.SavePicksAsync(_slate.Id, picks, _sheet?.Version ?? 0);
+            if (result.Outcome == PlayerApiOutcome.Success && result.Value is not null)
+            {
+                SetSheet(result.Value);
+                _message = "Draft saved.";
+            }
+            else if (result.Outcome is PlayerApiOutcome.Conflict or PlayerApiOutcome.TransientFailure)
+            {
+                await ReconcileAfterAmbiguousWriteAsync(picks, isSubmission: false);
+            }
+            else
+            {
+                _saveState = "Save failed";
+                _error = result.Message ?? "Your draft could not be saved.";
+            }
+        }
+        catch (Exception)
+        {
+            _saveState = "Save failed";
+            _error = "The save request failed. Your current selections are still on this page; check your connection before trying again.";
+        }
+        finally { _busy = false; }
+    }
+
+    private void BeginSubmit()
+    {
+        _message = _error = null;
+        var validation = _validation ?? PlayerPickDraftRules.Validate(_selections);
+        var issues = PlayerPickDraftRules.SubmissionIssues(validation, _selections.Count,
+            HasUnsavedChanges, _sheet is not null, _hasConflict);
+        if (issues.Count > 0)
+        {
+            _error = string.Join(" ", issues);
+            return;
+        }
+        if (CanSubmit) _showConfirmation = true;
+    }
+
+    private void CancelSubmit() => _showConfirmation = false;
+
+    private async Task ConfirmSubmitAsync()
+    {
+        if (!CanSubmit || _slate is null || _sheet is null) return;
+        _busy = true;
+        _saveState = "Submitting…";
+        try
+        {
+            var result = await Portal.SubmitAsync(_slate.Id, _sheet.Version);
+            if (result.Outcome == PlayerApiOutcome.Success && result.Value is not null)
+            {
+                SetSheet(result.Value);
+                _showConfirmation = false;
+                _message = "Your picks were submitted successfully.";
+            }
+            else if (result.Outcome is PlayerApiOutcome.Conflict or PlayerApiOutcome.TransientFailure)
+            {
+                _showConfirmation = false;
+                await ReconcileAfterAmbiguousWriteAsync(PlayerPickDraftRules.ToPicks(_selections), isSubmission: true);
+            }
+            else
+            {
+                _saveState = "Submission failed";
+                _error = result.Message ?? "Your picks could not be submitted.";
+                _showConfirmation = false;
+            }
+        }
+        catch (Exception)
+        {
+            _showConfirmation = false;
+            await ReconcileAfterAmbiguousWriteAsync(PlayerPickDraftRules.ToPicks(_selections), isSubmission: true);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ReconcileAfterAmbiguousWriteAsync(IReadOnlyList<PickDto> attemptedPicks, bool isSubmission)
+    {
+        if (_slate is null) return;
+        var result = await Portal.GetMySheetAsync(_slate.Id);
+        if (result.Outcome == PlayerApiOutcome.NotFound)
+        {
+            _latestSheet = null;
+            _hasConflict = true;
+            _saveState = "Not confirmed";
+            _error = isSubmission
+                ? "Submission was not confirmed. The server has no saved sheet; review the state before trying again."
+                : "Save was not confirmed. Your selections are preserved; review the server state before retrying.";
+            return;
+        }
+        if (result.Outcome != PlayerApiOutcome.Success || result.Value is null)
+        {
+            _saveState = "Not confirmed";
+            _error = "The request result is uncertain and the latest server state could not be loaded. Refresh before trying again.";
+            return;
+        }
+
+        var remote = result.Value;
+        if (remote.Status == "Submitted")
+        {
+            SetSheet(remote);
+            _hasConflict = false;
+            _saveState = "Submitted";
+            _message = "The server confirms this pick sheet was submitted.";
+            return;
+        }
+
+        _latestSheet = remote;
+        var samePicks = remote.Picks.OrderBy(x => x.GameId).SequenceEqual(attemptedPicks.OrderBy(x => x.GameId));
+        if (!isSubmission && samePicks)
+        {
+            SetSheet(remote);
+            _hasConflict = false;
+            _message = "The server confirms your draft was saved.";
+            return;
+        }
+
+        _hasConflict = true;
+        _saveState = "Server state needs review";
+        _error = isSubmission
+            ? "The latest server sheet is still a draft. Review the saved state before choosing whether to submit again."
+            : "The server has a different draft. Your local selections are preserved until you choose which version to keep.";
+    }
+
+    private void UseServerVersion()
+    {
+        SetSheet(_latestSheet);
+        _hasConflict = false;
+        _error = null;
+        _message = "Loaded the latest server version.";
+    }
+
+    private async Task ReplaceServerVersionAsync()
+    {
+        if (_latestSheet?.Status == "Submitted") return;
+        _sheet = _latestSheet;
+        _hasConflict = false;
+        await SaveDraftAsync();
+    }
+
+    private async Task BeforeInternalNavigation(LocationChangingContext context)
+    {
+        if (!HasUnsavedChanges) return;
+        var leave = await JavaScript.InvokeAsync<bool>("confirm",
+            "You have unsaved picks. Leave this page and discard your local changes?");
+        if (!leave) context.PreventNavigation();
+    }
+
+    private string WinnerName(PlayerPickSelection selection) => selection.SelectedTeamId == selection.Game.HomeTeamId
+        ? selection.Game.HomeTeam
+        : selection.SelectedTeamId == selection.Game.AwayTeamId ? selection.Game.AwayTeam : "No winner selected";
+
+    private static string FormatUtc(DateTimeOffset? value) => value is null
+        ? "Kickoff time unavailable"
+        : value.Value.ToUniversalTime().ToString("ddd, MMM d · h:mm tt 'UTC'");
+
+    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime()
+        .ToString("ddd, MMM d · h:mm tt 'UTC'");
+}

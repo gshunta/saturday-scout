@@ -6,13 +6,18 @@ using SaturdayScout.Admin.Components;
 using SaturdayScout.Application;
 using SaturdayScout.Infrastructure;
 using SaturdayScout.Infrastructure.Identity;
+using SaturdayScout.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using System.Threading.RateLimiting;
 
 var bootstrapRequested = args.Length > 0 && args[0] == "bootstrap-admin";
-var builder = WebApplication.CreateBuilder(bootstrapRequested ? [] : args);
+var developmentPlayerRequested = args.Length > 0 && args[0] == "provision-dev-player";
+var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested ? [] : args);
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAdminScoutService, AdminScoutStore>();
-builder.Services.AddScoped<AdminPortalService>();
+builder.Services.AddScoped<IScoutStore, ScoutStore>();
+builder.Services.AddScoped<IScoutService, ScoutService>();
 
 if (bootstrapRequested)
 {
@@ -35,6 +40,42 @@ if (bootstrapRequested)
     return;
 }
 
+if (developmentPlayerRequested)
+{
+    if (!builder.Environment.IsDevelopment() || args.Length != 7 || args[1] != "--email" ||
+        args[3] != "--display-name" || args[5] != "--confirm-owned-email" ||
+        args[6] != "--confirm-operator-approval" ||
+        builder.Configuration["SATURDAY_SCOUT_DEV_PLAYER_APPROVED"] != "yes")
+        throw new InvalidOperationException("Development Player provisioning requires Development, explicit operator approval, and email ownership confirmation.");
+    if (string.IsNullOrWhiteSpace(args[2]) || string.IsNullOrWhiteSpace(args[4]))
+        throw new InvalidOperationException("Player email and display name are required.");
+
+    var target = new NpgsqlConnectionStringBuilder(builder.Configuration["SATURDAY_SCOUT_DB_CONNECTION"]);
+    if (target.Host != "127.0.0.1" || target.Port != 55432 || target.Database != "saturday_scout")
+        throw new InvalidOperationException("Development Player provisioning is restricted to the local saturday_scout database on port 55432.");
+    await using var playerApp = builder.Build();
+    await using var scope = playerApp.Services.CreateAsyncScope();
+    var domain = scope.ServiceProvider.GetRequiredService<SaturdayScoutDbContext>();
+    var leagues = await domain.Leagues.AsNoTracking()
+        .Select(x => new { x.Id, x.Name, x.CommissionerUserId }).ToListAsync();
+    if (leagues.Count != 1)
+        throw new InvalidOperationException("Expected exactly one configured development league; refusing an ambiguous target.");
+    var league = leagues[0];
+    Console.WriteLine($"Target league: {league.Name}");
+    Console.Write("New Player password: ");
+    var password = ReadPassword();
+    Console.Write("Confirm password: ");
+    var confirmation = ReadPassword();
+    if (password.Length == 0 || password != confirmation)
+        throw new InvalidOperationException("Passwords are empty or do not match.");
+
+    await scope.ServiceProvider.GetRequiredService<AccountProvisioningService>()
+        .ProvisionDevelopmentPlayerAsync(args[2], args[4], password, league.Id, league.CommissionerUserId,
+            operatorApproved: true, emailOwnershipConfirmed: true, CancellationToken.None);
+    Console.WriteLine("Development Player account and league membership created. The password was not logged.");
+    return;
+}
+
 if (!builder.Environment.IsDevelopment())
 {
     var publicOrigin = builder.Configuration["SATURDAY_SCOUT_PUBLIC_ORIGIN"];
@@ -46,6 +87,9 @@ if (!builder.Environment.IsDevelopment())
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<AuthenticationStateProvider, AdminRevalidatingAuthenticationStateProvider>();
+// This facade is only used by Interactive Server pages. CLI commands build the
+// shared Identity host without a Blazor circuit or AuthenticationStateProvider.
+builder.Services.AddScoped<AdminPortalService>();
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("SystemAdministrator", policy => policy.RequireAuthenticatedUser()
@@ -95,9 +139,11 @@ app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 app.Run();
 
-static string ReadPassword(string prompt)
+static string ReadPassword(string prompt = "")
 {
-    Console.Write(prompt);
+    if (!string.IsNullOrEmpty(prompt)) Console.Write(prompt);
+    if (Console.IsInputRedirected)
+        return Console.ReadLine() ?? "";
     var chars = new List<char>();
     while (true)
     {

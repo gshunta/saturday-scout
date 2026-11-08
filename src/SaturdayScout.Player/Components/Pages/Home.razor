@@ -1,0 +1,142 @@
+@page "/"
+@attribute [Authorize(Policy = "Player")]
+@rendermode InteractiveServer
+@inject PlayerPortalService Portal
+@inject PlayerLeagueSelectionState LeagueState
+
+<PageTitle>Dashboard · Saturday Scout</PageTitle>
+<section class="welcome-card" aria-labelledby="page-title">
+    <p class="eyebrow">College football</p>
+    <h1 id="page-title">Your dashboard</h1>
+
+    @if (_loading)
+    {
+        <p role="status" class="muted">Loading your league and weekly slate…</p>
+    }
+    else if (_error is not null)
+    {
+        <p class="notice error" role="alert">@_error</p>
+    }
+    else if (LeagueState.Leagues.Count == 0)
+    {
+        <div class="empty-card" role="status">
+            <h2>No leagues yet</h2>
+            <p>You are not currently a member of a Saturday Scout league.</p>
+            <a class="primary-link" href="/league">View league access</a>
+        </div>
+    }
+    else
+    {
+        <div class="dashboard-controls">
+            <label for="league-select">Current league</label>
+            <select id="league-select" value="@LeagueState.SelectedLeagueId" @onchange="ChangeLeague">
+                @foreach (var league in LeagueState.Leagues)
+                {
+                    <option value="@league.Id">@league.Name</option>
+                }
+            </select>
+        </div>
+
+        @if (_slate is null)
+        {
+            <div class="empty-card" role="status">
+                <p class="eyebrow">@LeagueState.SelectedLeague?.Name</p>
+                <h2>No published college slate</h2>
+                <p>There is no available published college football week for this league yet.</p>
+                <a class="primary-link" href="/league">Choose another league</a>
+            </div>
+        }
+        else
+        {
+            <div class="dashboard-grid">
+                <article class="dashboard-card">
+                    <span class="metric-label">League</span>
+                    <strong>@LeagueState.SelectedLeague?.Name</strong>
+                </article>
+                <article class="dashboard-card">
+                    <span class="metric-label">Current college week</span>
+                    <strong>@_slate.Season · Week @_slate.Week</strong>
+                </article>
+                <article class="dashboard-card">
+                    <span class="metric-label">Pick sheet</span>
+                    <strong class="status-pill">@PlayerPickStatus.ToLabel(_slate, _sheet, DateTimeOffset.UtcNow)</strong>
+                </article>
+                <article class="dashboard-card">
+                    <span class="metric-label">Submission deadline</span>
+                    <strong>@FormatUtc(_slate.LockUtc)</strong>
+                </article>
+            </div>
+            <div class="dashboard-actions">
+                <a class="primary-link" href="/picks">@(_sheet?.Status == "Submitted" ? "View submitted picks" : "Open weekly picks")</a>
+                <a class="secondary-button" href="/standings">League standings</a>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    private bool _loading = true;
+    private string? _error;
+    private PlayerSlateDto? _slate;
+    private PickSheetDto? _sheet;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    private async Task ChangeLeague(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var leagueId) && await LeagueState.SelectAsync(leagueId))
+            await LoadSlateAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        var leagues = await LeagueState.RefreshAsync();
+        if (leagues.Outcome != PlayerApiOutcome.Success)
+        {
+            _error = leagues.Message ?? "Your leagues could not be loaded.";
+            _loading = false;
+            return;
+        }
+        await LoadSlateAsync();
+    }
+
+    private async Task LoadSlateAsync()
+    {
+        _error = null;
+        _slate = null;
+        _sheet = null;
+        if (LeagueState.SelectedLeagueId is not { } leagueId)
+        {
+            _loading = false;
+            return;
+        }
+
+        var slate = await Portal.GetActiveCollegeSlateAsync(leagueId);
+        if (slate.Outcome != PlayerApiOutcome.Success)
+        {
+            _error = slate.Message ?? "The published slate could not be loaded.";
+            _loading = false;
+            return;
+        }
+        _slate = slate.Value;
+        if (_slate is not null)
+        {
+            var sheet = await Portal.GetMySheetAsync(_slate.Id);
+            if (sheet.Outcome == PlayerApiOutcome.Success) _sheet = sheet.Value;
+            else if (sheet.Outcome != PlayerApiOutcome.NotFound)
+                _error = sheet.Message ?? "Your pick sheet could not be loaded.";
+        }
+        _loading = false;
+    }
+
+    private static string FormatUtc(DateTimeOffset? value) => value is null
+        ? "Not set"
+        : value.Value.ToUniversalTime().ToString("ddd, MMM d · h:mm tt 'UTC'");
+}

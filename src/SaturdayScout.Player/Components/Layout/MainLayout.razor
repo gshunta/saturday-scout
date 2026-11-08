@@ -1,0 +1,39 @@
+@inherits LayoutComponentBase
+
+<div class="player-app">
+    <header class="player-header">
+        <a class="brand" href="/" aria-label="Saturday Scout Player home">
+            <span class="brand-mark" aria-hidden="true">SS</span>
+            <span>Saturday Scout <small>Player</small></span>
+        </a>
+    </header>
+
+    <main id="main-content" class="main-content" tabindex="-1">
+        @Body
+    </main>
+
+    <AuthorizeView Policy="Player">
+        <Authorized>
+            <nav class="bottom-nav" aria-label="Player navigation">
+                <NavLink href="/picks" aria-label="Picks">
+                    <span class="nav-icon" aria-hidden="true">▣</span><span>Picks</span>
+                </NavLink>
+                <NavLink href="/standings" aria-label="Standings">
+                    <span class="nav-icon" aria-hidden="true">▥</span><span>Standings</span>
+                </NavLink>
+                <NavLink href="/league" aria-label="League">
+                    <span class="nav-icon" aria-hidden="true">♧</span><span>League</span>
+                </NavLink>
+                <NavLink href="/profile" aria-label="Profile">
+                    <span class="nav-icon" aria-hidden="true">●</span><span>Profile</span>
+                </NavLink>
+            </nav>
+        </Authorized>
+    </AuthorizeView>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

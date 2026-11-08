@@ -1,0 +1,73 @@
+@page "/league"
+@attribute [Authorize(Policy = "Player")]
+@rendermode InteractiveServer
+@inject PlayerLeagueSelectionState LeagueState
+
+<PageTitle>League · Saturday Scout</PageTitle>
+<section class="page-card" aria-labelledby="page-title">
+    <p class="eyebrow">Your competition</p>
+    <h1 id="page-title">League</h1>
+    @if (_loading)
+    {
+        <p class="muted" role="status">Loading your leagues…</p>
+    }
+    else if (_error is not null)
+    {
+        <p class="notice error" role="alert">@_error</p>
+    }
+    else if (LeagueState.Leagues.Count == 0)
+    {
+        <div class="empty-card" role="status">
+            <h2>No league memberships</h2>
+            <p>Leagues are private and invitation-only. Ask your commissioner to invite you.</p>
+        </div>
+    }
+    else
+    {
+        <p class="muted">Choose the league you want to use. Your selection stays active as you move between picks and standings.</p>
+        <div class="league-list" role="list" aria-label="Your leagues">
+            @foreach (var league in LeagueState.Leagues)
+            {
+                <article class="league-card" role="listitem">
+                    <div>
+                        <h2>@league.Name</h2>
+                        <p class="muted">Private league</p>
+                    </div>
+                    @if (LeagueState.SelectedLeagueId == league.Id)
+                    {
+                        <span class="status-pill" aria-current="true">Selected</span>
+                    }
+                    else
+                    {
+                        <button class="secondary-button" type="button" @onclick="() => SelectLeagueAsync(league.Id)">Select league</button>
+                    }
+                </article>
+            }
+        </div>
+        @if (LeagueState.SelectedLeague is { } selected)
+        {
+            <p class="notice" role="status">Current league: <strong>@selected.Name</strong></p>
+            <div class="dashboard-actions">
+                <a class="primary-link" href="/picks">Open weekly picks</a>
+                <a class="secondary-button" href="/standings">View standings</a>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    private bool _loading = true;
+    private string? _error;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        var result = await LeagueState.RefreshAsync();
+        if (result.Outcome != PlayerApiOutcome.Success)
+            _error = result.Message ?? "Your leagues could not be loaded.";
+        _loading = false;
+        StateHasChanged();
+    }
+
+    private async Task SelectLeagueAsync(Guid id) => await LeagueState.SelectAsync(id);
+}

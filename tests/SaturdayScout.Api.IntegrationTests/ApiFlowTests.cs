@@ -20,11 +20,14 @@ public sealed class ApiFlowTests
     [Fact]
     public async Task AdministratorPolicyRequiresRoleAndMfa()
     {
+        using var apiKey = System.Security.Cryptography.RSA.Create(3072);
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
             builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+            builder.UseSetting("PlayerAssertions:PublicKeys:0:KeyId", "api-policy-test-key");
+            builder.UseSetting("PlayerAssertions:PublicKeys:0:PublicKeyPem", apiKey.ExportSubjectPublicKeyInfoPem());
         });
         using var scope = factory.Services.CreateScope();
         var authorizer = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
@@ -183,11 +186,14 @@ public sealed class ApiFlowTests
     [Fact]
     public async Task ProductionRejectsDevelopmentIdentityAndHidesOpenApi()
     {
+        using var apiKey = System.Security.Cryptography.RSA.Create(3072);
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
             builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+            builder.UseSetting("PlayerAssertions:PublicKeys:0:KeyId", "api-policy-test-key");
+            builder.UseSetting("PlayerAssertions:PublicKeys:0:PublicKeyPem", apiKey.ExportSubjectPublicKeyInfoPem());
         });
         using var client = Client(factory, "commissioner");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/games?sport=nfl&season=2026&week=8")).StatusCode);
@@ -219,13 +225,17 @@ public sealed class TestDatabase : IAsyncDisposable
     private readonly string _name;
     private readonly string _connection;
     private readonly string _keyPath;
+    private readonly System.Security.Cryptography.RSA _playerAssertionKey;
+    private const string PlayerAssertionKeyId = "api-integration-test-key";
 
-    private TestDatabase(NpgsqlConnection admin, string name, string connection, string keyPath)
+    private TestDatabase(NpgsqlConnection admin, string name, string connection, string keyPath,
+        System.Security.Cryptography.RSA playerAssertionKey)
     {
         _admin = admin;
         _name = name;
         _connection = connection;
         _keyPath = keyPath;
+        _playerAssertionKey = playerAssertionKey;
     }
 
     public static async Task<TestDatabase> Create()
@@ -242,7 +252,8 @@ public sealed class TestDatabase : IAsyncDisposable
         var testBuilder = new NpgsqlConnectionStringBuilder(adminBuilder.ConnectionString) { Database = name, Pooling = false };
         var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-api-test-keys-{Guid.NewGuid():N}");
         Directory.CreateDirectory(keyPath);
-        var database = new TestDatabase(admin, name, testBuilder.ConnectionString, keyPath);
+        var database = new TestDatabase(admin, name, testBuilder.ConnectionString, keyPath,
+            System.Security.Cryptography.RSA.Create(3072));
         await using var context = database.Context();
         await context.Database.MigrateAsync();
         await using var identity = database.IdentityContext();
@@ -254,12 +265,18 @@ public sealed class TestDatabase : IAsyncDisposable
     public ScoutIdentityDbContext IdentityContext() => new(new DbContextOptionsBuilder<ScoutIdentityDbContext>()
         .UseNpgsql(_connection, options => options.MigrationsHistoryTable("__EFMigrationsHistory", "auth")).Options);
 
-    public WebApplicationFactory<Program> Factory(string environment) => new WebApplicationFactory<Program>()
+    public WebApplicationFactory<Program> Factory(string environment,
+        IReadOnlyDictionary<string, string?>? additionalSettings = null) => new WebApplicationFactory<Program>()
         .WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment(environment);
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", _connection);
             builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", _keyPath);
+            builder.UseSetting("PlayerAssertions:PublicKeys:0:KeyId", PlayerAssertionKeyId);
+            builder.UseSetting("PlayerAssertions:PublicKeys:0:PublicKeyPem", _playerAssertionKey.ExportSubjectPublicKeyInfoPem());
+            if (additionalSettings is not null)
+                foreach (var (key, value) in additionalSettings)
+                    if (value is not null) builder.UseSetting(key, value);
         });
 
     public async ValueTask DisposeAsync()
@@ -267,6 +284,7 @@ public sealed class TestDatabase : IAsyncDisposable
         await using var drop = new NpgsqlCommand($"DROP DATABASE \"{_name}\" WITH (FORCE)", _admin);
         await drop.ExecuteNonQueryAsync();
         await _admin.DisposeAsync();
+        _playerAssertionKey.Dispose();
         Directory.Delete(_keyPath, recursive: true);
     }
 }

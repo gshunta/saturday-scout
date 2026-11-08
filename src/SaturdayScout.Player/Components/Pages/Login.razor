@@ -1,0 +1,29 @@
+@page "/login"
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in · Saturday Scout</PageTitle>
+<section class="page-card login-card" aria-labelledby="login-heading">
+    <p class="eyebrow">Invitation beta</p>
+    <h1 id="login-heading">Sign in</h1>
+    @if (Error == "1")
+    {
+        <p class="notice error" role="alert">Unable to sign in. Check your email and password or try again later.</p>
+    }
+    @if (SignedOut == "1")
+    {
+        <p class="notice" role="status">You have been signed out.</p>
+    }
+    <form method="post" action="/auth/login" autocomplete="on">
+        <AntiforgeryToken />
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="username" required maxlength="256" />
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024" />
+        <button class="primary-button" type="submit">Sign in</button>
+    </form>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    [SupplyParameterFromQuery(Name = "signedout")] public string? SignedOut { get; set; }
+}
