@@ -16,6 +16,8 @@ public sealed record PlayerPickValidation(
     IReadOnlyList<int> MissingRanks,
     bool IsReadyToSubmit);
 
+public enum PlayerDraftReconnectDecision { KeepLocal, AdoptServer, Conflict }
+
 public static class PlayerPickDraftRules
 {
     public static PlayerPickValidation Validate(IReadOnlyCollection<PlayerPickSelection> selections)
@@ -66,6 +68,22 @@ public static class PlayerPickDraftRules
     }
 
     private static string FormatRanks(IEnumerable<int> ranks) => string.Join(", ", ranks.Order());
+
+    public static bool SameServerSnapshot(PickSheetDto? current, PickSheetDto? latest)
+    {
+        if (current is null || latest is null) return current is null && latest is null;
+        return current.Id == latest.Id && current.SlateId == latest.SlateId &&
+            current.Version == latest.Version && current.Status == latest.Status &&
+            current.SubmittedUtc == latest.SubmittedUtc &&
+            current.Picks.OrderBy(x => x.GameId).SequenceEqual(latest.Picks.OrderBy(x => x.GameId));
+    }
+
+    public static PlayerDraftReconnectDecision DecideReconnect(PickSheetDto? current,
+        PickSheetDto? latest, bool hasUnsavedChanges)
+    {
+        if (!SameServerSnapshot(current, latest)) return PlayerDraftReconnectDecision.Conflict;
+        return hasUnsavedChanges ? PlayerDraftReconnectDecision.KeepLocal : PlayerDraftReconnectDecision.AdoptServer;
+    }
 
     public static IReadOnlyList<PlayerPickSelection> Restore(PlayerSlateDto slate, PickSheetDto? sheet)
     {

@@ -3,7 +3,10 @@
 @rendermode InteractiveServer
 @inject PlayerPortalService Portal
 @inject PlayerLeagueSelectionState LeagueState
+@inject PlayerConnectionState Connection
+@inject PlayerBrowserTimeZoneState BrowserTimeZone
 @inject IJSRuntime JavaScript
+@implements IDisposable
 
 <PageTitle>Weekly picks · Saturday Scout</PageTitle>
 <NavigationLock ConfirmExternalNavigation="HasUnsavedChanges" OnBeforeInternalNavigation="BeforeInternalNavigation" />
@@ -46,6 +49,11 @@
         </div>
         <p class="muted">Choose a winner and one confidence value from 1–10 for each game. Each confidence value can be used once.</p>
 
+        @if (!_isConnected)
+        {
+            <p class="notice error" role="alert">Connection lost. Your in-page selections are preserved; saving and submission are paused until reconnection.</p>
+        }
+
         @if (_error is not null)
         {
             <p class="notice error" role="alert">@_error</p>
@@ -84,34 +92,39 @@
                     <article class="game-card" @key="selection.Game.GameId">
                         <div class="game-card-heading">
                             <span class="week-chip">Game @selection.Game.DisplayOrder</span>
-                            <span class="game-status">@selection.Game.Status</span>
+                            <span class="game-status @GameStatusClass(selection.Game.Status)">@selection.Game.Status</span>
                         </div>
-                        <p class="kickoff">@FormatUtc(selection.Game.KickoffUtc)</p>
+                        <p class="kickoff">@FormatLocal(selection.Game.KickoffUtc)</p>
+                        <p class="matchup-label">@selection.Game.AwayTeam <span aria-hidden="true">&#64;</span> @selection.Game.HomeTeam</p>
                         @if (selection.Game.Status == "Final" && selection.Game.HomeScore is not null && selection.Game.AwayScore is not null)
                         {
                             <p class="final-score">Final · @selection.Game.AwayScore – @selection.Game.HomeScore</p>
                         }
                         <fieldset disabled="@ReadOnly">
-                            <legend class="sr-only">Pick winner for @selection.Game.AwayTeam at @selection.Game.HomeTeam</legend>
+                            <legend class="sr-only">Select a winner for @selection.Game.AwayTeam at @selection.Game.HomeTeam</legend>
                             <div class="winner-options">
-                                <label class="winner-option">
-                                    <input type="radio" name="winner-@selection.Game.GameId" value="@selection.Game.AwayTeamId"
+                                <label class="@TeamChoiceClass(selection, selection.Game.AwayTeamId)">
+                                    <input data-connection-sensitive type="radio" name="winner-@selection.Game.GameId" value="@selection.Game.AwayTeamId"
                                            checked="@(selection.SelectedTeamId == selection.Game.AwayTeamId)"
                                            @onchange="_ => SetWinner(selection, selection.Game.AwayTeamId)" />
-                                    <span>@selection.Game.AwayTeam <small>(@selection.Game.AwayAbbreviation)</small></span>
+                                    <span class="team-choice-name">@selection.Game.AwayTeam <small>(@selection.Game.AwayAbbreviation)</small>
+                                        @if (selection.SelectedTeamId == selection.Game.AwayTeamId) { <strong class="selected-label">Selected</strong> }
+                                    </span>
                                 </label>
                                 <span class="at-sign">at</span>
-                                <label class="winner-option">
-                                    <input type="radio" name="winner-@selection.Game.GameId" value="@selection.Game.HomeTeamId"
+                                <label class="@TeamChoiceClass(selection, selection.Game.HomeTeamId)">
+                                    <input data-connection-sensitive type="radio" name="winner-@selection.Game.GameId" value="@selection.Game.HomeTeamId"
                                            checked="@(selection.SelectedTeamId == selection.Game.HomeTeamId)"
                                            @onchange="_ => SetWinner(selection, selection.Game.HomeTeamId)" />
-                                    <span>@selection.Game.HomeTeam <small>(@selection.Game.HomeAbbreviation)</small></span>
+                                    <span class="team-choice-name">@selection.Game.HomeTeam <small>(@selection.Game.HomeAbbreviation)</small>
+                                        @if (selection.SelectedTeamId == selection.Game.HomeTeamId) { <strong class="selected-label">Selected</strong> }
+                                    </span>
                                 </label>
                             </div>
                         </fieldset>
                         <div class="confidence-row">
                             <label for="confidence-@selection.Game.GameId">Confidence</label>
-                            <select id="confidence-@selection.Game.GameId" value="@selection.ConfidenceRank" disabled="@ReadOnly"
+                            <select data-connection-sensitive id="confidence-@selection.Game.GameId" value="@selection.ConfidenceRank" disabled="@ReadOnly"
                                     @onchange="args => SetConfidence(selection, args)">
                                 <option value="">Choose 1–10</option>
                                 @for (var rank = 1; rank <= 10; rank++)
@@ -146,23 +159,23 @@
                 </div>
             }
 
-            @if (!ReadOnly)
+            @if (_sheet?.Status == "Submitted")
+            {
+                <div class="notice success" role="status">
+                    Pick sheet submitted @FormatLocal(_sheet.SubmittedUtc). This sheet is read-only.
+                </div>
+            }
+            else if (SlateLocked)
+            {
+                <div class="notice" role="status">This slate is locked. The server will not accept additional changes.</div>
+            }
+            else if (!ReadOnly)
             {
                 <div class="picks-actions">
                     <span class="save-state" role="status">@_saveState</span>
-                    <button class="secondary-button" type="button" disabled="@(!CanAttemptSave || _busy)" @onclick="SaveDraftAsync">Save draft</button>
-                    <button class="primary-button" type="button" disabled="@(!CanAttemptReview || _busy)" @onclick="BeginSubmit">Review submission</button>
+                    <button data-connection-sensitive class="secondary-button" type="button" disabled="@(!CanAttemptSave || _busy)" @onclick="SaveDraftAsync">Save draft</button>
+                    <button data-connection-sensitive class="primary-button" type="button" disabled="@(!CanAttemptReview || _busy)" @onclick="BeginSubmit">Review submission</button>
                 </div>
-            }
-            else if (_sheet?.Status == "Submitted")
-            {
-                <div class="notice success" role="status">
-                    Pick sheet submitted @FormatUtc(_sheet.SubmittedUtc). This sheet is read-only.
-                </div>
-            }
-            else
-            {
-                <div class="notice" role="status">This slate is locked. The server will not accept additional changes.</div>
             }
         }
     }
@@ -182,8 +195,8 @@
                 }
             </ol>
             <div class="button-row">
-                <button class="secondary-button" type="button" disabled="@_busy" @onclick="CancelSubmit">Back to picks</button>
-                <button class="primary-button" type="button" disabled="@_busy" @onclick="ConfirmSubmitAsync">@(_busy ? "Submitting…" : "Confirm submission")</button>
+                <button data-connection-sensitive class="secondary-button" type="button" disabled="@_busy" @onclick="CancelSubmit">Back to picks</button>
+                <button data-connection-sensitive class="primary-button" type="button" disabled="@(_busy || !_isConnected)" @onclick="ConfirmSubmitAsync">@(_busy ? "Submitting…" : "Confirm submission")</button>
             </div>
         </section>
     </div>
@@ -200,12 +213,15 @@
     private bool _busy;
     private bool _showConfirmation;
     private bool _hasConflict;
+    private bool _isConnected = true;
+    private bool _reconcileWhenIdle;
     private string? _error;
     private string? _message;
     private string _saveState = "";
 
-    private bool ReadOnly => _slate is null || _sheet?.Status == "Submitted" || _slate.Status != "Published" ||
+    private bool SlateLocked => _slate is null || _slate.Status != "Published" ||
         _slate.LockUtc is null || DateTimeOffset.UtcNow >= _slate.LockUtc;
+    private bool ReadOnly => SlateLocked || _sheet?.Status == "Submitted" || !_isConnected || _hasConflict;
     private bool HasUnsavedChanges => _selections.Any(x =>
         !_savedValues.TryGetValue(x.Game.GameId, out var saved) || saved.Team != x.SelectedTeamId || saved.Rank != x.ConfidenceRank);
     private bool CanSaveLocal => _validation is { } validation && PlayerPickDraftRules.DraftSaveIssues(validation).Count == 0;
@@ -215,9 +231,98 @@
         _sheet.Status == "Draft" && _validation?.IsReadyToSubmit == true && !ReadOnly;
     private string CurrentStatus => _slate is null ? "Unavailable" : PlayerPickStatus.ToLabel(_slate, _sheet, DateTimeOffset.UtcNow);
 
+    protected override void OnInitialized()
+    {
+        _isConnected = Connection.IsConnected;
+        Connection.Changed += OnConnectionChanged;
+    }
+
+    private void OnConnectionChanged() => _ = InvokeAsync(async () =>
+    {
+        var wasConnected = _isConnected;
+        _isConnected = Connection.IsConnected;
+        if (!_isConnected)
+        {
+            _message = null;
+        }
+        else if (!wasConnected && _slate is not null)
+        {
+            if (_busy) _reconcileWhenIdle = true;
+            else
+            {
+                try { await RefreshAfterReconnectAsync(); }
+                catch (Exception)
+                {
+                    _error = "Connection restored, but the latest server draft could not be checked. Your in-page selections are preserved; refresh to compare server state.";
+                }
+            }
+        }
+        StateHasChanged();
+    });
+
+    private async Task RefreshAfterReconnectAsync()
+    {
+        if (_slate is null) return;
+        var previousSheet = _sheet;
+        var hadLocalChanges = HasUnsavedChanges;
+        var result = await Portal.GetMySheetAsync(_slate.Id);
+        if (result.Outcome == PlayerApiOutcome.NotFound)
+        {
+            if (previousSheet is not null)
+            {
+                _latestSheet = null;
+                _hasConflict = true;
+                _error = "The saved sheet is no longer on the server. Your local selections are preserved; choose how to resolve the difference.";
+            }
+            else
+            {
+                _message = hadLocalChanges
+                    ? "Connection restored. The server has no saved draft; your in-page selections are preserved."
+                    : "Connection restored. No saved draft exists yet.";
+            }
+            return;
+        }
+        if (result.Outcome != PlayerApiOutcome.Success || result.Value is null)
+        {
+            _error = "Connection restored, but the latest server draft could not be checked. Your in-page selections are preserved; refresh to compare server state.";
+            return;
+        }
+
+        var latest = result.Value;
+        switch (PlayerPickDraftRules.DecideReconnect(previousSheet, latest, hadLocalChanges))
+        {
+            case PlayerDraftReconnectDecision.AdoptServer:
+                SetSheet(latest);
+                _message = "Connection restored. Your saved draft is current.";
+                break;
+            case PlayerDraftReconnectDecision.KeepLocal:
+                _message = "Connection restored. The saved draft is unchanged; your unsaved selections remain on this page.";
+                break;
+            case PlayerDraftReconnectDecision.Conflict:
+                _latestSheet = latest;
+                _hasConflict = true;
+                _error = latest.Status == "Submitted"
+                    ? "This sheet was submitted in another session. Your local selections are preserved; load the submitted server version to continue."
+                    : "The server draft changed while you were disconnected. Your local selections are preserved until you choose a version.";
+                break;
+        }
+    }
+
+    private async Task ReconcileIfConnectionRestoredWhileBusyAsync()
+    {
+        if (!_reconcileWhenIdle || _busy || !_isConnected) return;
+        _reconcileWhenIdle = false;
+        try { await RefreshAfterReconnectAsync(); }
+        catch (Exception)
+        {
+            _error = "Connection restored, but the latest server draft could not be checked. Your in-page selections are preserved; refresh to compare server state.";
+        }
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
+        await BrowserTimeZone.ResolveAsync(JavaScript);
         await LoadAsync();
         StateHasChanged();
     }
@@ -348,7 +453,11 @@
             _saveState = "Save failed";
             _error = "The save request failed. Your current selections are still on this page; check your connection before trying again.";
         }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ReconcileIfConnectionRestoredWhileBusyAsync();
+        }
     }
 
     private void BeginSubmit()
@@ -398,7 +507,11 @@
             _showConfirmation = false;
             await ReconcileAfterAmbiguousWriteAsync(PlayerPickDraftRules.ToPicks(_selections), isSubmission: true);
         }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ReconcileIfConnectionRestoredWhileBusyAsync();
+        }
     }
 
     private async Task ReconcileAfterAmbiguousWriteAsync(IReadOnlyList<PickDto> attemptedPicks, bool isSubmission)
@@ -473,14 +586,26 @@
         if (!leave) context.PreventNavigation();
     }
 
+    public void Dispose() => Connection.Changed -= OnConnectionChanged;
+
     private string WinnerName(PlayerPickSelection selection) => selection.SelectedTeamId == selection.Game.HomeTeamId
         ? selection.Game.HomeTeam
         : selection.SelectedTeamId == selection.Game.AwayTeamId ? selection.Game.AwayTeam : "No winner selected";
 
-    private static string FormatUtc(DateTimeOffset? value) => value is null
-        ? "Kickoff time unavailable"
-        : value.Value.ToUniversalTime().ToString("ddd, MMM d · h:mm tt 'UTC'");
+    private static string TeamChoiceClass(PlayerPickSelection selection, Guid teamId) =>
+        selection.SelectedTeamId == teamId ? "winner-option selected" : "winner-option";
 
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime()
-        .ToString("ddd, MMM d · h:mm tt 'UTC'");
+    private static string GameStatusClass(string status) => status.ToLowerInvariant() switch
+    {
+        "final" => "is-final",
+        "inprogress" => "is-live",
+        "postponed" or "canceled" or "nocontest" => "is-alert",
+        _ => "is-scheduled"
+    };
+
+    private string FormatLocal(DateTimeOffset? value) =>
+        PlayerLocalTimeFormatter.Format(value, BrowserTimeZone.TimeZone, "Kickoff time unavailable");
+
+    private string FormatLocal(DateTimeOffset value) =>
+        PlayerLocalTimeFormatter.Format(value, BrowserTimeZone.TimeZone, "Time unavailable");
 }

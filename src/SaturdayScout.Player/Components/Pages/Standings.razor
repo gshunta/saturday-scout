@@ -5,7 +5,7 @@
 @inject PlayerLeagueSelectionState LeagueState
 
 <PageTitle>Standings · Saturday Scout</PageTitle>
-<section class="page-card" aria-labelledby="page-title">
+<section class="page-card standings-page" aria-labelledby="page-title">
     <p class="eyebrow">League</p>
     <h1 id="page-title">Standings</h1>
     @if (_loading)
@@ -59,12 +59,12 @@
                         {
                             position++;
                             <tr>
-                                <td>@position</td>
-                                <th scope="row">@entry.DisplayName</th>
-                                <td>@entry.Points</td>
+                                <td data-label="Rank"><strong class="standing-rank">@position</strong></td>
+                                <th scope="row" data-label="Player">@entry.DisplayName</th>
+                                <td data-label="Total points"><strong class="standing-points">@entry.Points</strong></td>
                                 @if (_weeklyByPlayer.Count > 0)
                                 {
-                                    <td>@(_weeklyByPlayer.TryGetValue(entry.UserId, out var points) ? points : 0)</td>
+                                    <td data-label="Week points">@(_weeklyByPlayer.TryGetValue(entry.UserId, out var points) ? points : 0)</td>
                                 }
                             </tr>
                         }

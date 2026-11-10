@@ -28,7 +28,7 @@
         <div class="league-list" role="list" aria-label="Your leagues">
             @foreach (var league in LeagueState.Leagues)
             {
-                <article class="league-card" role="listitem">
+                <article class="league-card @(LeagueState.SelectedLeagueId == league.Id ? "is-selected" : null)" role="listitem">
                     <div>
                         <h2>@league.Name</h2>
                         <p class="muted">Private league</p>

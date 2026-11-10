@@ -1,5 +1,7 @@
 @page "/login"
 @attribute [AllowAnonymous]
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager Navigation
 
 <PageTitle>Sign in · Saturday Scout</PageTitle>
 <section class="page-card login-card" aria-labelledby="login-heading">
@@ -26,4 +28,11 @@
 @code {
     [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
     [SupplyParameterFromQuery(Name = "signedout")] public string? SignedOut { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authentication = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        if (authentication.User.Identity?.IsAuthenticated == true)
+            Navigation.NavigateTo("/", replace: true);
+    }
 }

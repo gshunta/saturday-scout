@@ -3,33 +3,42 @@
 <div class="player-app">
     <header class="player-header">
         <a class="brand" href="/" aria-label="Saturday Scout Player home">
-            <span class="brand-mark" aria-hidden="true">SS</span>
-            <span>Saturday Scout <small>Player</small></span>
+            <span class="brand-mark" aria-hidden="true">S</span>
+            <span>Saturday Scout <small>PLAYER</small></span>
         </a>
     </header>
 
-    <main id="main-content" class="main-content" tabindex="-1">
-        @Body
-    </main>
-
     <AuthorizeView Policy="Player">
         <Authorized>
-            <nav class="bottom-nav" aria-label="Player navigation">
-                <NavLink href="/picks" aria-label="Picks">
-                    <span class="nav-icon" aria-hidden="true">▣</span><span>Picks</span>
+            <nav class="player-nav" aria-label="Player navigation">
+                <NavLink href="/picks" Match="NavLinkMatch.All">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5zM8 8h8M8 12h8M8 16h4" /></svg>
+                    <span>Picks</span>
                 </NavLink>
-                <NavLink href="/standings" aria-label="Standings">
-                    <span class="nav-icon" aria-hidden="true">▥</span><span>Standings</span>
+                <NavLink href="/standings">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9m7 10V5m7 14v-7M3 19h18" /></svg>
+                    <span>Standings</span>
                 </NavLink>
-                <NavLink href="/league" aria-label="League">
-                    <span class="nav-icon" aria-hidden="true">♧</span><span>League</span>
+                <NavLink href="/league">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5m0 7c0-4 2.5-6 7-6 0 4-2 6-7 6Zm0 3c0-3-2-5-6-5 0 3 2 5 6 5Z" /></svg>
+                    <span>League</span>
                 </NavLink>
-                <NavLink href="/profile" aria-label="Profile">
-                    <span class="nav-icon" aria-hidden="true">●</span><span>Profile</span>
+                <NavLink href="/profile">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20a7 7 0 0 1 14 0" /></svg>
+                    <span>Profile</span>
                 </NavLink>
             </nav>
         </Authorized>
     </AuthorizeView>
+
+    <ConnectionStatusBridge />
+    <div id="player-connectivity-banner" class="connectivity-banner" role="alert" aria-live="assertive" hidden>
+        Connection lost. Your unsaved picks stay on this page. Saving and submission are disabled until the server reconnects.
+    </div>
+
+    <main id="main-content" class="main-content" tabindex="-1">
+        @Body
+    </main>
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>
