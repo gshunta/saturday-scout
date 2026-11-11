@@ -63,11 +63,17 @@ builder.Services.AddAuthentication(options =>
             context, TimeSpan.FromHours(playerCookie.AbsoluteTimeoutHours), PlayerAuthDefaults.Scheme, ScoutRoles.Player);
         options.Events.OnRedirectToLogin = context =>
         {
+            if (IsBffOrSessionPath(context.Request.Path))
+                return WriteAuthenticationProblemAsync(context.HttpContext, StatusCodes.Status401Unauthorized,
+                    "Authentication is required.");
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return Task.CompletedTask;
         };
         options.Events.OnRedirectToAccessDenied = context =>
         {
+            if (IsBffOrSessionPath(context.Request.Path))
+                return WriteAuthenticationProblemAsync(context.HttpContext, StatusCodes.Status403Forbidden,
+                    "Player access is required.");
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return Task.CompletedTask;
         };
@@ -87,12 +93,36 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/bff") ||
+        context.Request.Path.Equals(new PathString("/auth/session")))
+        context.Response.Headers.CacheControl = "no-store";
+    await next();
+});
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
 app.MapPlayerAuthEndpoints();
+app.MapPlayerBffEndpoints();
 app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 app.Run();
+
+static bool IsBffOrSessionPath(PathString path) =>
+    path.StartsWithSegments("/bff") || path.Equals(new PathString("/auth/session"));
+
+static async Task WriteAuthenticationProblemAsync(HttpContext context, int statusCode, string title)
+{
+    context.Response.StatusCode = statusCode;
+    context.Response.ContentType = "application/problem+json";
+    context.Response.Headers.CacheControl = "no-store";
+    await context.Response.WriteAsJsonAsync(new Microsoft.AspNetCore.Mvc.ProblemDetails
+    {
+        Type = "about:blank",
+        Title = title,
+        Status = statusCode
+    }, options: null, contentType: "application/problem+json", cancellationToken: context.RequestAborted);
+}
 
 public partial class Program;

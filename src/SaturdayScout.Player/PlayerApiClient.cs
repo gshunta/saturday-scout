@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Components.Authorization;
 using SaturdayScout.Infrastructure.Identity;
 
@@ -25,9 +26,17 @@ public sealed record PlayerApiResult<T>(
     IReadOnlyDictionary<string, string[]>? ValidationErrors = null,
     bool RetryRecommended = false);
 
+public sealed record PlayerApiForwardResponse(
+    int StatusCode,
+    string? ContentType,
+    byte[] Body,
+    string? RetryAfter = null);
+
 public interface IPlayerApiClient
 {
     Task<PlayerApiResult<T>> SendAsync<T>(HttpRequestMessage request, CancellationToken cancellationToken = default);
+    Task<PlayerApiForwardResponse> ForwardAsync(HttpRequestMessage request, ClaimsPrincipal principal,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class PlayerApiClient(
@@ -35,14 +44,71 @@ public sealed class PlayerApiClient(
     AuthenticationStateProvider authenticationStateProvider,
     IPlayerApiAssertionIssuer assertions) : IPlayerApiClient
 {
+    private const int MaximumForwardResponseBytes = 4 * 1024 * 1024;
+
+    public async Task<PlayerApiForwardResponse> ForwardAsync(HttpRequestMessage request, ClaimsPrincipal principal,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(principal);
+        if (!IsAllowedApiTarget(request.RequestUri))
+            return ProblemResponse(StatusCodes.Status400BadRequest, "Invalid API request target.");
+        if (httpClient.BaseAddress is null)
+            return ProblemResponse(StatusCodes.Status503ServiceUnavailable, "The API is temporarily unavailable.");
+
+        if (principal?.Identity?.IsAuthenticated != true)
+            return ProblemResponse(StatusCodes.Status401Unauthorized, "Authentication is required.");
+        if (!principal.IsInRole(ScoutRoles.Player))
+            return ProblemResponse(StatusCodes.Status403Forbidden, "Player access is required.");
+
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", assertions.Issue(principal));
+        HttpResponseMessage response;
+        try
+        {
+            response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            return ProblemResponse(StatusCodes.Status503ServiceUnavailable, "The API is temporarily unavailable.");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ProblemResponse(StatusCodes.Status503ServiceUnavailable, "The API request timed out.");
+        }
+
+        using (response)
+        {
+            var contentLength = response.Content.Headers.ContentLength;
+            if (contentLength > MaximumForwardResponseBytes)
+                return ProblemResponse(StatusCodes.Status502BadGateway, "The API response exceeded the allowed size.");
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var content = new MemoryStream();
+            var buffer = new byte[16 * 1024];
+            while (true)
+            {
+                var count = await stream.ReadAsync(buffer, cancellationToken);
+                if (count == 0) break;
+                if (content.Length + count > MaximumForwardResponseBytes)
+                    return ProblemResponse(StatusCodes.Status502BadGateway, "The API response exceeded the allowed size.");
+                await content.WriteAsync(buffer.AsMemory(0, count), cancellationToken);
+            }
+
+            var body = content.ToArray();
+            var statusCode = (int)response.StatusCode;
+            if (statusCode != StatusCodes.Status204NoContent && body.Length == 0 && statusCode >= 400)
+                return ProblemResponse(statusCode, "The API request could not be completed.");
+
+            return new PlayerApiForwardResponse(statusCode, response.Content.Headers.ContentType?.ToString(), body,
+                response.Headers.RetryAfter?.ToString());
+        }
+    }
+
     public async Task<PlayerApiResult<T>> SendAsync<T>(HttpRequestMessage request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var requestPath = request.RequestUri?.OriginalString;
-        if (httpClient.BaseAddress is null || request.RequestUri is null || string.IsNullOrWhiteSpace(requestPath) || request.RequestUri.IsAbsoluteUri ||
-            requestPath.StartsWith("//", StringComparison.Ordinal) ||
-            !(requestPath.StartsWith("/api/v1/", StringComparison.Ordinal) || requestPath.StartsWith("api/v1/", StringComparison.Ordinal)))
+        if (!IsAllowedApiTarget(request.RequestUri) || httpClient.BaseAddress is null)
             return new(PlayerApiOutcome.Failure, Message: "The API request target is not configured correctly.");
         var principal = (await authenticationStateProvider.GetAuthenticationStateAsync()).User;
         if (principal?.Identity?.IsAuthenticated != true || !principal.IsInRole(ScoutRoles.Player))
@@ -99,6 +165,27 @@ public sealed class PlayerApiClient(
 
         return new(PlayerApiOutcome.Failure, Message: "The request could not be completed.");
         }
+    }
+
+    private static bool IsAllowedApiTarget(Uri? requestUri)
+    {
+        var requestPath = requestUri?.OriginalString;
+        return requestUri is not null && !requestUri.IsAbsoluteUri &&
+               !string.IsNullOrWhiteSpace(requestPath) &&
+               !requestPath.StartsWith("//", StringComparison.Ordinal) &&
+               (requestPath.StartsWith("/api/v1/", StringComparison.Ordinal) ||
+                requestPath.StartsWith("api/v1/", StringComparison.Ordinal));
+    }
+
+    private static PlayerApiForwardResponse ProblemResponse(int statusCode, string title)
+    {
+        var body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            type = "about:blank",
+            title,
+            status = statusCode
+        });
+        return new PlayerApiForwardResponse(statusCode, "application/problem+json", body);
     }
 
     private static async Task<PlayerApiResult<T>> ReadValidationFailureAsync<T>(HttpResponseMessage response,
