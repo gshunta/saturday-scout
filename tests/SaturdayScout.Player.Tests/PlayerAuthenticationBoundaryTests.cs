@@ -105,6 +105,21 @@ public sealed class PlayerAuthenticationBoundaryTests
     }
 
     [Fact]
+    public async Task LogoutRejectsRequestsWithoutAntiforgeryToken()
+    {
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+
+        var response = await client.PostAsync("/auth/logout", new FormUrlEncodedContent([]));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public void PlayerAssertionIsShortLivedAndContainsOnlyServerBoundIdentity()
     {
         using var rsa = RSA.Create(3072);
@@ -127,7 +142,11 @@ public sealed class PlayerAuthenticationBoundaryTests
                 new Claim(ClaimTypes.Role, ScoutRoles.Player)
             ], "test"));
 
-            var jwt = new JwtSecurityTokenHandler().ReadJwtToken(issuer.Issue(player));
+            var assertion = issuer.Issue(player);
+            var privatePem = File.ReadAllText(keyPath);
+            Assert.DoesNotContain(privatePem, assertion, StringComparison.Ordinal);
+            Assert.DoesNotContain("PRIVATE KEY", assertion, StringComparison.Ordinal);
+            var jwt = new JwtSecurityTokenHandler().ReadJwtToken(assertion);
 
             Assert.Equal(SecurityAlgorithms.RsaSha256, jwt.Header.Alg);
             Assert.Equal("test-key-1", jwt.Header.Kid);

@@ -10,7 +10,13 @@ using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi("v1", options => options.AddDocumentTransformer((document, _, _) =>
+{
+    document.Info.Title = "Saturday Scout API";
+    document.Info.Version = "1.0.0";
+    document.Info.Description = "Version 1 API contract. Player requests are authenticated by the server-side Player BFF.";
+    return Task.CompletedTask;
+}));
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);

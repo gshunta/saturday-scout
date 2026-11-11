@@ -70,16 +70,20 @@ public sealed class PlayerAssertionPrevalidationTests
         client.DefaultRequestHeaders.Authorization = new("Bearer", CreateToken(trustedKey, keyId, 120,
             audience: "another-api"));
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new("Bearer", CreateToken(trustedKey, keyId, 120,
+            issuer: "untrusted-player"));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
         Directory.Delete(keyPath, recursive: true);
     }
 
     private static string CreateToken(RSA rsa, string keyId, int expiresInSeconds,
-        string clientId = "saturday-scout-player", string audience = "SaturdayScout.Api")
+        string clientId = "saturday-scout-player", string audience = "SaturdayScout.Api",
+        string issuer = "SaturdayScout.Player")
     {
         var now = DateTimeOffset.UtcNow;
         var issuedAt = expiresInSeconds < 0 ? now.AddSeconds(expiresInSeconds - 60) : now;
         var credentials = new SigningCredentials(new RsaSecurityKey(rsa) { KeyId = keyId }, SecurityAlgorithms.RsaSha256);
-        var jwt = new JwtSecurityToken("SaturdayScout.Player", audience,
+        var jwt = new JwtSecurityToken(issuer, audience,
             [
                 new Claim(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString("D")),
                 new Claim(PlayerAssertionDefaults.ClientIdClaim, clientId),
