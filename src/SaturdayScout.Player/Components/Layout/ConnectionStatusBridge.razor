@@ -1,0 +1,39 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JavaScript
+@inject PlayerConnectionState Connection
+
+@code {
+    private DotNetObjectReference<ConnectionStatusBridge>? _reference;
+    private bool _attached;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _reference = DotNetObjectReference.Create(this);
+        try
+        {
+            await JavaScript.InvokeVoidAsync("saturdayScoutConnection.attach", _reference);
+            _attached = true;
+        }
+        catch (JSException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    [JSInvokable]
+    public Task OnConnectionChanged(bool connected)
+    {
+        Connection.SetConnected(connected);
+        return Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_attached)
+        {
+            try { await JavaScript.InvokeVoidAsync("saturdayScoutConnection.detach"); }
+            catch (JSException) { }
+            catch (InvalidOperationException) { }
+        }
+        _reference?.Dispose();
+    }
+}

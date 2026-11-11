@@ -1,8 +1,10 @@
-@page "/"
+@page "/dashboard"
 @attribute [Authorize(Policy = "Player")]
 @rendermode InteractiveServer
 @inject PlayerPortalService Portal
 @inject PlayerLeagueSelectionState LeagueState
+@inject PlayerBrowserTimeZoneState BrowserTimeZone
+@inject IJSRuntime JavaScript
 
 <PageTitle>Dashboard · Saturday Scout</PageTitle>
 <section class="welcome-card" aria-labelledby="page-title">
@@ -63,7 +65,7 @@
                 </article>
                 <article class="dashboard-card">
                     <span class="metric-label">Submission deadline</span>
-                    <strong>@FormatUtc(_slate.LockUtc)</strong>
+                    <strong>@FormatLocal(_slate.LockUtc)</strong>
                 </article>
             </div>
             <div class="dashboard-actions">
@@ -83,6 +85,7 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
+        await BrowserTimeZone.ResolveAsync(JavaScript);
         await LoadAsync();
         StateHasChanged();
     }
@@ -136,7 +139,6 @@
         _loading = false;
     }
 
-    private static string FormatUtc(DateTimeOffset? value) => value is null
-        ? "Not set"
-        : value.Value.ToUniversalTime().ToString("ddd, MMM d · h:mm tt 'UTC'");
+    private string FormatLocal(DateTimeOffset? value) =>
+        PlayerLocalTimeFormatter.Format(value, BrowserTimeZone.TimeZone, "Not set");
 }

@@ -53,6 +53,40 @@ public sealed class PlayerAuthenticationBoundaryTests
     }
 
     [Fact]
+    public async Task PlayerPicksRouteRedirectsUnauthenticatedVisitorsToLogin()
+    {
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+
+        var response = await client.GetAsync("/picks");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PwaRootLaunchRouteRedirectsUnauthenticatedPlayersToLoginInsteadOfNotFound()
+    {
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = true
+        });
+
+        using var response = await client.GetAsync("/");
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/login", response.RequestMessage?.RequestUri?.AbsolutePath);
+        Assert.DoesNotContain("<h3>Not Found</h3>", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Sign in", html);
+    }
+
+    [Fact]
     public async Task LoginRejectsPostsWithoutAntiforgeryToken()
     {
         using var factory = CreateFactory();

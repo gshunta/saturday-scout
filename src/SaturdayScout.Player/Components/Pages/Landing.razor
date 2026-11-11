@@ -1,0 +1,15 @@
+@page "/"
+@attribute [AllowAnonymous]
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager Navigation
+
+<PageTitle>Saturday Scout</PageTitle>
+<p class="muted" role="status">Opening Saturday Scout…</p>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        var authentication = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        Navigation.NavigateTo(PlayerLandingRoute.Destination(authentication.User.Identity?.IsAuthenticated == true), replace: true);
+    }
+}
