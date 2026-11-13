@@ -219,8 +219,10 @@ public sealed class PlayerAuthenticationBoundaryTests
         Assert.Equal(HttpStatusCode.Unauthorized, sessionResponse.StatusCode);
     }
 
-    [Fact]
-    public async Task BffRejectsUnauthenticatedRequestsWithMachineReadable401()
+    [Theory]
+    [InlineData("/bff/api/v1/leagues/me")]
+    [InlineData("/bff/api/v1/leagues/11111111-1111-1111-1111-111111111111/slates/weeks?season=2026")]
+    public async Task BffRejectsUnauthenticatedRequestsWithMachineReadable401(string path)
     {
         using var factory = CreateFactory();
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -229,15 +231,17 @@ public sealed class PlayerAuthenticationBoundaryTests
             AllowAutoRedirect = false
         });
 
-        using var response = await client.GetAsync("/bff/api/v1/leagues/me");
+        using var response = await client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.StartsWith("application/problem+json", response.Content.Headers.ContentType?.ToString());
         Assert.Equal(401, (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
     }
 
-    [Fact]
-    public async Task BffRequiresPlayerRoleAndRejectsAdministratorOnlyPrincipal()
+    [Theory]
+    [InlineData("/bff/api/v1/leagues/me")]
+    [InlineData("/bff/api/v1/leagues/11111111-1111-1111-1111-111111111111/slates/weeks?season=2026")]
+    public async Task BffRequiresPlayerRoleAndRejectsAdministratorOnlyPrincipal(string path)
     {
         using var factory = CreateBffFactory();
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -247,9 +251,36 @@ public sealed class PlayerAuthenticationBoundaryTests
         });
         AddTestPlayer(client, Guid.NewGuid(), ScoutRoles.SystemAdministrator);
 
-        using var response = await client.GetAsync("/bff/api/v1/leagues/me");
+        using var response = await client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task BffForwardsOnlyTheSeasonQueryForAvailableCollegeSlateWeeks()
+    {
+        var fakeApi = new StubPlayerApiClient();
+        using var factory = CreateBffFactory(services =>
+        {
+            services.RemoveAll<IPlayerApiClient>();
+            services.AddSingleton<IPlayerApiClient>(fakeApi);
+        });
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+        AddTestPlayer(client);
+        const string leagueId = "11111111-1111-1111-1111-111111111111";
+
+        using var response = await client.GetAsync($"/bff/api/v1/leagues/{leagueId}/slates/weeks?season=2026&unexpected=1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(0, fakeApi.ForwardRequestCount);
+
+        using var validResponse = await client.GetAsync($"/bff/api/v1/leagues/{leagueId}/slates/weeks?season=2026");
+        Assert.Equal(HttpStatusCode.OK, validResponse.StatusCode);
+        Assert.Equal($"/api/v1/leagues/{leagueId}/slates/weeks?season=2026", fakeApi.LastRequestPath);
     }
 
     [Theory]

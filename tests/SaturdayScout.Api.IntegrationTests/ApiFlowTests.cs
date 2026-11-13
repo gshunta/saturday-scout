@@ -17,6 +17,66 @@ namespace SaturdayScout.Api.IntegrationTests;
 
 public sealed class ApiFlowTests
 {
+    [PostgresFact]
+    public async Task CollegeSlateWeekListIsSeasonScopedAndRequiresLeagueMembership()
+    {
+        await using var database = await TestDatabase.Create();
+        await using var seed = database.Context();
+        var commissioner = new User(Guid.NewGuid(), "Commissioner", "commissioner");
+        var outsider = new User(Guid.NewGuid(), "Outsider", "outsider");
+        seed.AddRange(commissioner, outsider);
+        await seed.SaveChangesAsync();
+
+        using var factory = database.Factory("Development");
+        using var noAuth = factory.CreateClient();
+        using var commissionerClient = Client(factory, "commissioner");
+        using var outsiderClient = Client(factory, "outsider");
+        const string unknownLeague = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await noAuth.GetAsync($"/api/v1/leagues/{unknownLeague}/slates/weeks?season=2026")).StatusCode);
+
+        var createResponse = await commissionerClient.PostAsJsonAsync("/api/v1/leagues", new CreateLeagueRequest("Slate Weeks"));
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+        var league = (await createResponse.Content.ReadFromJsonAsync<LeagueDto>())!;
+        var otherLeagueResponse = await commissionerClient.PostAsJsonAsync("/api/v1/leagues", new CreateLeagueRequest("Other League"));
+        Assert.Equal(HttpStatusCode.Created, otherLeagueResponse.StatusCode);
+        var otherLeague = (await otherLeagueResponse.Content.ReadFromJsonAsync<LeagueDto>())!;
+        var home = new Team(Guid.NewGuid(), Sport.CollegeFootball, "Home", "HOM", "fixture", "home");
+        var away = new Team(Guid.NewGuid(), Sport.CollegeFootball, "Away", "AWY", "fixture", "away");
+        var now = DateTimeOffset.UtcNow;
+        var games = Enumerable.Range(0, 10).Select(index => new Game(Guid.NewGuid(), Sport.CollegeFootball,
+            2026, 10, home.Id, away.Id, now.AddDays(3).AddHours(index), "fixture", $"week-10-game-{index}")).ToArray();
+        var slate10 = new WeeklySlate(Guid.NewGuid(), league.Id, Sport.CollegeFootball, 2026, 10);
+        slate10.ReplaceGames(games);
+        slate10.Publish(games, now.AddDays(2), now);
+        var draftSheet = new PickSheet(Guid.NewGuid(), slate10.Id, commissioner.Id);
+        draftSheet.ReplaceDraftPicks(slate10, games, [(games[0].Id, home.Id, 1)], now);
+        seed.AddRange(home, away);
+        seed.AddRange(games);
+        seed.WeeklySlates.Add(slate10);
+        seed.WeeklySlates.AddRange(new[] { 11, 12 }.Select(week =>
+            new WeeklySlate(Guid.NewGuid(), league.Id, Sport.CollegeFootball, 2026, week)));
+        seed.WeeklySlates.Add(new WeeklySlate(Guid.NewGuid(), league.Id, Sport.Nfl, 2026, 7));
+        seed.WeeklySlates.Add(new WeeklySlate(Guid.NewGuid(), otherLeague.Id, Sport.CollegeFootball, 2026, 9));
+        seed.PickSheets.Add(draftSheet);
+        await seed.SaveChangesAsync();
+
+        var weeks = await commissionerClient.GetFromJsonAsync<int[]>(
+            $"/api/v1/leagues/{league.Id}/slates/weeks?season=2026");
+        Assert.NotNull(weeks);
+        Assert.Equal(new[] { 10, 11, 12 }, weeks);
+        Assert.Empty(await commissionerClient.GetFromJsonAsync<int[]>(
+            $"/api/v1/leagues/{league.Id}/slates/weeks?season=2025") ?? []);
+        Assert.Equal(HttpStatusCode.Forbidden, (await outsiderClient.GetAsync(
+            $"/api/v1/leagues/{league.Id}/slates/weeks?season=2026")).StatusCode);
+        var draftLeaderboard = await commissionerClient.GetFromJsonAsync<LeaderboardDto>(
+            $"/api/v1/leagues/{league.Id}/leaderboard?scope=college&season=2026&week=10");
+        var commissionerStanding = draftLeaderboard!.Entries.Single(x => x.UserId == commissioner.Id);
+        Assert.Equal(0, commissionerStanding.Points);
+        Assert.Equal(0, commissionerStanding.CorrectPicks);
+        Assert.Equal(0, commissionerStanding.PendingGames);
+    }
+
     [Fact]
     public async Task AdministratorPolicyRequiresRoleAndMfa()
     {

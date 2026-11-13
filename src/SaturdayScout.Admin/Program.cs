@@ -13,11 +13,13 @@ using System.Threading.RateLimiting;
 
 var bootstrapRequested = args.Length > 0 && args[0] == "bootstrap-admin";
 var developmentPlayerRequested = args.Length > 0 && args[0] == "provision-dev-player";
-var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested ? [] : args);
+var developmentQaLeagueRequested = args.Length > 0 && args[0] == "provision-dev-qa-league";
+var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested || developmentQaLeagueRequested ? [] : args);
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAdminScoutService, AdminScoutStore>();
 builder.Services.AddScoped<IScoutStore, ScoutStore>();
 builder.Services.AddScoped<IScoutService, ScoutService>();
+builder.Services.AddScoped<DevelopmentQaLeagueProvisioner>();
 
 if (bootstrapRequested)
 {
@@ -81,6 +83,28 @@ if (developmentPlayerRequested)
     var playerId = await provisioning.ProvisionDevelopmentPlayerAsync(args[2], args[4], password, league.Id, league.CommissionerUserId,
             operatorApproved: true, emailOwnershipConfirmed: true, CancellationToken.None);
     Console.WriteLine($"Development Player account and league membership are ready: {playerId:D}. The password was not logged.");
+    return;
+}
+
+if (developmentQaLeagueRequested)
+{
+    if (!builder.Environment.IsDevelopment() || args.Length != 6 ||
+        args[1] != "--commissioner-email" || args[3] != "--player-email" ||
+        args[5] != "--confirm-operator-approval" ||
+        builder.Configuration["SATURDAY_SCOUT_DEV_QA_LEAGUE_APPROVED"] != "yes")
+        throw new InvalidOperationException("QA league provisioning requires Development, explicit operator approval, and commissioner/player emails.");
+
+    var target = new NpgsqlConnectionStringBuilder(builder.Configuration["SATURDAY_SCOUT_DB_CONNECTION"]);
+    if (target.Host != "127.0.0.1" || target.Port != 55432 || target.Database != "saturday_scout")
+        throw new InvalidOperationException("QA league provisioning is restricted to the local saturday_scout database on port 55432.");
+
+    await using var qaApp = builder.Build();
+    await using var qaScope = qaApp.Services.CreateAsyncScope();
+    var result = await qaScope.ServiceProvider.GetRequiredService<DevelopmentQaLeagueProvisioner>()
+        .ProvisionAsync(args[2], args[4], operatorApproved: true, CancellationToken.None);
+    Console.WriteLine($"Development QA league ready: {DevelopmentQaLeagueProvisioner.LeagueName} ({result.LeagueId:D}). " +
+        $"League {(result.LeagueCreated ? "created" : "already existed")}; Player 3 membership " +
+        $"{(result.PlayerMembershipAdded ? "added" : "already existed")}. No slate was created.");
     return;
 }
 

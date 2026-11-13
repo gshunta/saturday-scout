@@ -45,6 +45,7 @@ public interface IScoutService
 {
     Task<IReadOnlyList<LeagueDto>> GetMyLeaguesAsync(Guid actorId, CancellationToken ct);
     Task<PlayerSlateDto?> GetActiveCollegeSlateAsync(Guid actorId, Guid leagueId, CancellationToken ct);
+    Task<IReadOnlyList<int>> GetCollegeSlateWeeksAsync(Guid actorId, Guid leagueId, int season, CancellationToken ct);
     Task<IReadOnlyList<GameDto>> BrowseGamesAsync(Guid actorId, string sport, int season, int week, int page, int pageSize, CancellationToken ct);
     Task<LeagueDto> CreateLeagueAsync(Guid actorId, CreateLeagueRequest request, CancellationToken ct);
     Task<LeagueDto> GetLeagueAsync(Guid actorId, Guid leagueId, CancellationToken ct);
@@ -136,6 +137,12 @@ public sealed class ScoutService(IScoutStore store) : IScoutService
 
     public Task<PlayerSlateDto?> GetActiveCollegeSlateAsync(Guid actorId, Guid leagueId, CancellationToken ct) =>
         store.GetActiveCollegeSlateAsync(actorId, leagueId, ct);
+
+    public Task<IReadOnlyList<int>> GetCollegeSlateWeeksAsync(Guid actorId, Guid leagueId, int season, CancellationToken ct)
+    {
+        if (season is < 1900 or > 9999) throw new ScoutException(ScoutError.Invalid, "Invalid season.");
+        return store.GetCollegeSlateWeeksAsync(actorId, leagueId, season, ct);
+    }
 
     public Task<IReadOnlyList<GameDto>> BrowseGamesAsync(Guid actorId, string sport, int season, int week, int page, int pageSize, CancellationToken ct)
     {

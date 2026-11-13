@@ -11,6 +11,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using SaturdayScout.Application;
+using SaturdayScout.Domain;
 using SaturdayScout.Admin;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
@@ -21,6 +23,54 @@ namespace SaturdayScout.Admin.IntegrationTests;
 public sealed class AdminAuthenticationTests
 {
     private const string Password = "Disposable-test-Password-123!";
+
+    [PostgresFact]
+    public async Task DevelopmentQaLeagueProvisioningPreservesExistingMembershipAndIsIdempotent()
+    {
+        await using var database = await AdminTestDatabase.CreateAsync();
+        await database.BootstrapAsync("admin@example.test", Password);
+        await database.CreatePlayerAsync("manual-player3@example.test", "Disposable-player-Password-123!");
+        using var factory = database.Factory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider;
+        var users = provider.GetRequiredService<UserManager<ApplicationUser>>();
+        var commissionerIdentity = (await users.FindByEmailAsync("admin@example.test"))!;
+        var playerIdentity = (await users.FindByEmailAsync("manual-player3@example.test"))!;
+        var adminService = provider.GetRequiredService<IAdminScoutService>();
+        var scout = provider.GetRequiredService<IScoutService>();
+        var commissioner = await provider.GetRequiredService<SaturdayScoutDbContext>().Users
+            .AsNoTracking().SingleAsync(x => x.Id == commissionerIdentity.Id);
+        var player = await provider.GetRequiredService<SaturdayScoutDbContext>().Users
+            .AsNoTracking().SingleAsync(x => x.Id == playerIdentity.Id);
+        var beta = await adminService.CreateLeagueAsync(new CreateAdminLeagueRequest("Saturday Scout Beta", commissioner.Id), default);
+        await scout.AddMemberAsync(commissioner.Id, beta.Id, new AddMemberRequest(player.ExternalSubjectId), default);
+
+        var provisioner = provider.GetRequiredService<DevelopmentQaLeagueProvisioner>();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => provisioner.ProvisionAsync(
+            "admin@example.test", "manual-player3@example.test", operatorApproved: false, default));
+        var first = await provisioner.ProvisionAsync("admin@example.test", "manual-player3@example.test",
+            operatorApproved: true, default);
+        var second = await provisioner.ProvisionAsync("admin@example.test", "manual-player3@example.test",
+            operatorApproved: true, default);
+
+        Assert.True(first.LeagueCreated);
+        Assert.True(first.PlayerMembershipAdded);
+        Assert.Equal(first.LeagueId, second.LeagueId);
+        Assert.False(second.LeagueCreated);
+        Assert.False(second.PlayerMembershipAdded);
+
+        var domain = provider.GetRequiredService<SaturdayScoutDbContext>();
+        var qa = await domain.Leagues.AsNoTracking().SingleAsync(x => x.Id == first.LeagueId);
+        Assert.Equal(DevelopmentQaLeagueProvisioner.LeagueName, qa.Name);
+        Assert.Equal(commissioner.Id, qa.CommissionerUserId);
+        Assert.Empty(await domain.WeeklySlates.AsNoTracking().Where(x => x.LeagueId == qa.Id).ToListAsync());
+        Assert.Empty(await domain.Games.AsNoTracking().ToListAsync());
+        Assert.Empty(await domain.PickSheets.AsNoTracking().ToListAsync());
+        Assert.Equal(MembershipRole.Member, (await domain.LeagueMembers.AsNoTracking().SingleAsync(x =>
+            x.LeagueId == qa.Id && x.UserId == player.Id)).Role);
+        Assert.Equal(MembershipRole.Member, (await domain.LeagueMembers.AsNoTracking().SingleAsync(x =>
+            x.LeagueId == beta.Id && x.UserId == player.Id)).Role);
+    }
 
     [Fact]
     public async Task InteractiveAdminHostStartsWithAuthenticationStateAndPortalFacadeRegistered()

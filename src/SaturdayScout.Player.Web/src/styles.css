@@ -82,7 +82,8 @@ tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
 .rank-number { width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: 9px; color: var(--teal); background: #39b8a01c; font-weight: 800; }
 .standings-empty { padding: 20px; }
 .panel-list { display: grid; gap: 12px; }
-.league-item { display: flex; align-items: center; gap: 14px; }
+.league-item { display: flex; min-width: 0; align-items: center; gap: 14px; }
+.league-item-details { min-width: 0; flex: 1; }
 .league-item h2, .league-item p { margin: 0; }
 .league-item.selected { border-color: #39b8a080; }
 .league-initial, .profile-avatar { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; color: var(--teal); background: #39b8a01e; font-size: 1.2rem; font-weight: 850; }

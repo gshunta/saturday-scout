@@ -117,6 +117,13 @@ export async function getActiveSlate(leagueId: string): Promise<PlayerSlateDto |
   return bffRequest<PlayerSlateDto | null>(`/bff/api/v1/leagues/${encodeURIComponent(leagueId)}/slates/active`);
 }
 
+export async function getCollegeSlateWeeks(leagueId: string, season: number): Promise<number[]> {
+  const query = new URLSearchParams({ season: String(season) });
+  return bffRequest<number[]>(
+    `/bff/api/v1/leagues/${encodeURIComponent(leagueId)}/slates/weeks?${query.toString()}`,
+  );
+}
+
 export async function getMyPickSheet(slateId: string): Promise<PickSheetDto | null> {
   try {
     return await bffRequest<PickSheetDto>(`/bff/api/v1/slates/${encodeURIComponent(slateId)}/picks/me`);
