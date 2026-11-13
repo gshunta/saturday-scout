@@ -5,6 +5,10 @@
 
 # dotenv files
 .env
+.env.*
+!.env.example
+src/SaturdayScout.Player.Web/.env.local
+src/SaturdayScout.Player/wwwroot/react/
 
 # User-specific files
 *.rsuser

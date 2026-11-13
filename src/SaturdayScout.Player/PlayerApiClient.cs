@@ -148,7 +148,8 @@ public sealed class PlayerApiClient(
         }
 
         if (response.StatusCode == HttpStatusCode.Unauthorized)
-            return new(PlayerApiOutcome.AuthenticationRequired, Message: "Your session expired. Sign in again.");
+            return new(PlayerApiOutcome.AuthenticationRequired,
+                Message: "The Player API did not authorize this request. Your Player session may still be active; refresh or contact support.");
         if (response.StatusCode == HttpStatusCode.Forbidden)
             return new(PlayerApiOutcome.Forbidden, Message: "You do not have access to this league or action.");
         if (response.StatusCode == HttpStatusCode.NotFound)

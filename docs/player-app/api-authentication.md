@@ -31,7 +31,7 @@ The Player server needs a private RSA PEM file of at least 3072 bits. Configure 
 - `ApiAssertion:ClientId` (normally `saturday-scout-player`)
 - `Player:ApiOrigin`
 
-The API receives only the public key PEM, issuer/audience/client ID, and key ID. Environment-variable names use `PlayerAssertions__PublicKeys__0__KeyId` and `PlayerAssertions__PublicKeys__0__PublicKeyPem`; add further indexed entries to overlap keys during rotation. The private key must never be configured on the API or checked into source control. Use HTTPS for non-Development API origins. Keep the private key readable only by the Player service identity, and provision it through the hosting secret/file mechanism.
+The API receives only the public key PEM, issuer/audience/client ID, and key ID. Environment-variable names use `PlayerAssertions__PublicKeys__0__KeyId` and `PlayerAssertions__PublicKeys__0__PublicKeyPem`; add further indexed entries to overlap keys during rotation. The API project has a `UserSecretsId` for local Development configuration, so the public key and key ID may also be stored with `dotnet user-secrets set --project src/SaturdayScout.Api`. The Player private key must never be configured on the API or checked into source control. Use HTTPS for non-Development API origins. Keep the private key readable only by the Player service identity, and provision it through the hosting secret/file mechanism.
 
 Example local key generation (run locally; do not commit either output):
 

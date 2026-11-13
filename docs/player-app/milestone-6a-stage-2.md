@@ -64,9 +64,10 @@ The automated endpoint tests use a test-only authentication handler for authenti
 - `tests/SaturdayScout.Player.Tests/PlayerAuthenticationBoundaryTests.cs` — session, expiry, role, CSRF, hostile-origin, status propagation, no-open-proxy, logout, and assertion boundary tests.
 - `docs/player-app/milestone-6a-stage-2.md` — endpoint and operational documentation.
 
-## Remaining risks and Stage 3 readiness
+## Remaining risks noted before Stage 3
 
-- The public React static-file hosting and history fallback are not implemented. Stage 3 should add these without replacing the existing Blazor fallback until acceptance is complete.
+Stage 3 has since added the React static assets and scoped `/react` fallback described in [Milestone 6A Stage 3](milestone-6a-stage-3.md). The other forward-looking risks below remain relevant:
+
 - The current Player API assertion has no stateful replay cache; it remains short-lived and server-only as documented in Stage 1.
 - The Origin comparison depends on accurate trusted proxy scheme/host forwarding in hosted environments. Azure ingress/reverse-proxy settings must be verified before deployment.
 - API serialization is relayed as raw JSON, so the OpenAPI artifact remains the backend API contract and should continue to be checked for DTO changes.

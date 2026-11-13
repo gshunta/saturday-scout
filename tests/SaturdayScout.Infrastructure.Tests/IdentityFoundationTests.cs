@@ -6,6 +6,8 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using SaturdayScout.Domain;
+using SaturdayScout.Application;
+using SaturdayScout.Infrastructure;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 using Xunit;
@@ -27,6 +29,93 @@ public sealed class IdentityFoundationTests
         Assert.True(fk.IsRequired);
         Assert.Equal(DeleteBehavior.Restrict, fk.DeleteBehavior);
         Assert.Equal("auth", entity.GetSchema());
+    }
+
+    [PostgresFact]
+    public async Task DevelopmentPlayerProvisioningIsLinkedAndIdempotent()
+    {
+        var adminBuilder = new NpgsqlConnectionStringBuilder(
+            Environment.GetEnvironmentVariable("SATURDAY_SCOUT_TEST_ADMIN_CONNECTION")) { Database = "postgres" };
+        var name = $"saturday_scout_dev_player_{Guid.NewGuid():N}";
+        await using var admin = new NpgsqlConnection(adminBuilder.ConnectionString);
+        await admin.OpenAsync();
+        await using (var create = new NpgsqlCommand($"CREATE DATABASE \"{name}\"", admin))
+            await create.ExecuteNonQueryAsync();
+        try
+        {
+            var connection = new NpgsqlConnectionStringBuilder(adminBuilder.ConnectionString)
+            { Database = name, Pooling = false }.ConnectionString;
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddDataProtection();
+            services.AddDbContext<SaturdayScoutDbContext>(x => x.UseNpgsql(connection));
+            services.AddDbContext<ScoutIdentityDbContext>(x => x.UseNpgsql(connection,
+                n => n.MigrationsHistoryTable("__EFMigrationsHistory", "auth")));
+            services.AddIdentityCore<ApplicationUser>(x =>
+            {
+                x.User.RequireUniqueEmail = true;
+                x.Password.RequiredLength = 12;
+            }).AddRoles<IdentityRole<Guid>>().AddEntityFrameworkStores<ScoutIdentityDbContext>().AddDefaultTokenProviders();
+            services.AddScoped<IScoutStore, ScoutStore>();
+            services.AddScoped<IScoutService, ScoutService>();
+            services.AddScoped<AccountProvisioningService>();
+            await using var provider = services.BuildServiceProvider();
+
+            var commissionerId = Guid.NewGuid();
+            var leagueId = Guid.NewGuid();
+            await using (var setup = provider.CreateAsyncScope())
+            {
+                var domain = setup.ServiceProvider.GetRequiredService<SaturdayScoutDbContext>();
+                await domain.Database.MigrateAsync();
+                await setup.ServiceProvider.GetRequiredService<ScoutIdentityDbContext>().Database.MigrateAsync();
+                domain.Users.Add(new User(commissionerId, "Commissioner", "commissioner:dev-test"));
+                domain.Leagues.Add(new League(leagueId, "Development League", commissionerId, "test-hash",
+                    DateTimeOffset.UtcNow.AddDays(1)));
+                domain.LeagueMembers.Add(new LeagueMember(leagueId, commissionerId, MembershipRole.Commissioner,
+                    DateTimeOffset.UtcNow));
+                await domain.SaveChangesAsync();
+            }
+
+            Guid provisionedId;
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                provisionedId = await scope.ServiceProvider.GetRequiredService<AccountProvisioningService>()
+                    .ProvisionDevelopmentPlayerAsync("manual-player2@example.test", "Manual Player Two",
+                        "Long-test-password-123!", leagueId, commissionerId, true, true, default);
+            }
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var provision = scope.ServiceProvider.GetRequiredService<AccountProvisioningService>();
+                var existing = await provision.FindExistingDevelopmentPlayerAsync("MANUAL-PLAYER2@example.test",
+                    "Manual Player Two", leagueId, commissionerId, true, true, default);
+                Assert.Equal(provisionedId, existing);
+
+                // A retry is a no-op even if a different password is supplied; it never resets credentials.
+                var repeated = await provision.ProvisionDevelopmentPlayerAsync("manual-player2@example.test",
+                    "Manual Player Two", "Another-valid-password-456!", leagueId, commissionerId, true, true, default);
+                Assert.Equal(provisionedId, repeated);
+            }
+            await using (var verify = provider.CreateAsyncScope())
+            {
+                var domain = verify.ServiceProvider.GetRequiredService<SaturdayScoutDbContext>();
+                var identityDb = verify.ServiceProvider.GetRequiredService<ScoutIdentityDbContext>();
+                var identity = await identityDb.Users.SingleAsync(x => x.Id == provisionedId);
+                var domainUser = await domain.Users.SingleAsync(x => x.Id == provisionedId);
+                Assert.True(identity.EmailConfirmed);
+                Assert.Equal($"identity:{provisionedId:N}", domainUser.ExternalSubjectId);
+                Assert.True(await verify.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>()
+                    .IsInRoleAsync(identity, ScoutRoles.Player));
+                Assert.True(await domain.LeagueMembers.AnyAsync(x => x.LeagueId == leagueId &&
+                    x.UserId == provisionedId && x.Role == MembershipRole.Member));
+                Assert.Equal(1, await identityDb.Users.CountAsync(x => x.Email == "manual-player2@example.test"));
+                Assert.False(await domain.PickSheets.AnyAsync(x => x.UserId == provisionedId));
+            }
+        }
+        finally
+        {
+            await using var drop = new NpgsqlCommand($"DROP DATABASE \"{name}\" WITH (FORCE)", admin);
+            await drop.ExecuteNonQueryAsync();
+        }
     }
 
     [PostgresFact]

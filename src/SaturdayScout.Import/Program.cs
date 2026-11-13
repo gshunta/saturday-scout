@@ -4,6 +4,9 @@ using SaturdayScout.Domain;
 using SaturdayScout.Infrastructure.CollegeFootballData;
 using SaturdayScout.Infrastructure.Persistence;
 
+if (args.Length > 0 && args[0] == "dev-picks-scenario")
+    return await DevelopmentPicksScenarioCommand.RunAsync(args[1..]);
+
 try
 {
     if (!(args.Length == 6 && args[5] == "--live" || args.Length == 7 && args[5] == "--fixture-dir") ||

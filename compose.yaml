@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: saturday_scout
       POSTGRES_PASSWORD: ${SATURDAY_SCOUT_DB_PASSWORD:?Set SATURDAY_SCOUT_DB_PASSWORD}
     ports:
-      - "127.0.0.1:${SATURDAY_SCOUT_DB_PORT:-5432}:5432"
+      - "127.0.0.1:${SATURDAY_SCOUT_DB_PORT:-55432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

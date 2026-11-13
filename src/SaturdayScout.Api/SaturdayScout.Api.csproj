@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>SaturdayScout.Api-a34b7b97-8bba-4fa5-a562-6d9a94e9b132</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

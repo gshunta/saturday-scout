@@ -42,13 +42,14 @@ if (bootstrapRequested)
 
 if (developmentPlayerRequested)
 {
-    if (!builder.Environment.IsDevelopment() || args.Length != 7 || args[1] != "--email" ||
-        args[3] != "--display-name" || args[5] != "--confirm-owned-email" ||
-        args[6] != "--confirm-operator-approval" ||
+    if (!builder.Environment.IsDevelopment() || args.Length != 9 || args[1] != "--email" ||
+        args[3] != "--display-name" || args[5] != "--league-id" ||
+        args[7] != "--confirm-owned-email" || args[8] != "--confirm-operator-approval" ||
         builder.Configuration["SATURDAY_SCOUT_DEV_PLAYER_APPROVED"] != "yes")
-        throw new InvalidOperationException("Development Player provisioning requires Development, explicit operator approval, and email ownership confirmation.");
-    if (string.IsNullOrWhiteSpace(args[2]) || string.IsNullOrWhiteSpace(args[4]))
-        throw new InvalidOperationException("Player email and display name are required.");
+        throw new InvalidOperationException("Development Player provisioning requires Development, a league ID, explicit operator approval, and email ownership confirmation.");
+    if (string.IsNullOrWhiteSpace(args[2]) || string.IsNullOrWhiteSpace(args[4]) ||
+        !Guid.TryParse(args[6], out var developmentLeagueId) || developmentLeagueId == Guid.Empty)
+        throw new InvalidOperationException("A valid Player email, display name, and league ID are required.");
 
     var target = new NpgsqlConnectionStringBuilder(builder.Configuration["SATURDAY_SCOUT_DB_CONNECTION"]);
     if (target.Host != "127.0.0.1" || target.Port != 55432 || target.Database != "saturday_scout")
@@ -56,12 +57,20 @@ if (developmentPlayerRequested)
     await using var playerApp = builder.Build();
     await using var scope = playerApp.Services.CreateAsyncScope();
     var domain = scope.ServiceProvider.GetRequiredService<SaturdayScoutDbContext>();
-    var leagues = await domain.Leagues.AsNoTracking()
-        .Select(x => new { x.Id, x.Name, x.CommissionerUserId }).ToListAsync();
-    if (leagues.Count != 1)
-        throw new InvalidOperationException("Expected exactly one configured development league; refusing an ambiguous target.");
-    var league = leagues[0];
-    Console.WriteLine($"Target league: {league.Name}");
+    var league = await domain.Leagues.AsNoTracking()
+        .Where(x => x.Id == developmentLeagueId)
+        .Select(x => new { x.Id, x.Name, x.CommissionerUserId }).SingleOrDefaultAsync();
+    if (league is null)
+        throw new InvalidOperationException("The requested development league does not exist in the local database.");
+    Console.WriteLine($"Target league: {league.Name} ({league.Id:D})");
+    var provisioning = scope.ServiceProvider.GetRequiredService<AccountProvisioningService>();
+    var existingId = await provisioning.FindExistingDevelopmentPlayerAsync(args[2], args[4], league.Id,
+        league.CommissionerUserId, operatorApproved: true, emailOwnershipConfirmed: true, CancellationToken.None);
+    if (existingId is { } alreadyProvisioned)
+    {
+        Console.WriteLine($"Development Player is already provisioned and linked: {alreadyProvisioned:D}. No changes made.");
+        return;
+    }
     Console.Write("New Player password: ");
     var password = ReadPassword();
     Console.Write("Confirm password: ");
@@ -69,10 +78,9 @@ if (developmentPlayerRequested)
     if (password.Length == 0 || password != confirmation)
         throw new InvalidOperationException("Passwords are empty or do not match.");
 
-    await scope.ServiceProvider.GetRequiredService<AccountProvisioningService>()
-        .ProvisionDevelopmentPlayerAsync(args[2], args[4], password, league.Id, league.CommissionerUserId,
+    var playerId = await provisioning.ProvisionDevelopmentPlayerAsync(args[2], args[4], password, league.Id, league.CommissionerUserId,
             operatorApproved: true, emailOwnershipConfirmed: true, CancellationToken.None);
-    Console.WriteLine("Development Player account and league membership created. The password was not logged.");
+    Console.WriteLine($"Development Player account and league membership are ready: {playerId:D}. The password was not logged.");
     return;
 }
 

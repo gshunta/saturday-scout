@@ -44,6 +44,29 @@ public sealed class PlayerAuthenticationBoundaryTests
     }
 
     [Fact]
+    public async Task ReactRootAndClientRoutesServeTheEntryPointWithoutRedirecting()
+    {
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+
+        foreach (var route in new[] { "/react/", "/react/login", "/react/standings" })
+        {
+            using var response = await client.GetAsync(route);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+            Assert.Contains("<div id=\"root\"></div>", await response.Content.ReadAsStringAsync(),
+                StringComparison.Ordinal);
+        }
+
+        using var bareRoot = await client.GetAsync("/react");
+        Assert.Equal(HttpStatusCode.OK, bareRoot.StatusCode);
+    }
+
+    [Fact]
     public async Task AdminCookieDoesNotAuthenticatePlayerSession()
     {
         using var factory = CreateFactory();
@@ -292,6 +315,7 @@ public sealed class PlayerAuthenticationBoundaryTests
 
     [Theory]
     [InlineData(HttpStatusCode.NoContent, "")]
+    [InlineData(HttpStatusCode.Unauthorized, "{\"title\":\"Bearer assertion rejected\",\"status\":401}")]
     [InlineData(HttpStatusCode.NotFound, "{\"title\":\"Missing\",\"status\":404}")]
     [InlineData(HttpStatusCode.Conflict, "{\"title\":\"Conflict\",\"status\":409}")]
     [InlineData(HttpStatusCode.UnprocessableEntity, "{\"title\":\"Invalid picks\",\"status\":422}")]
@@ -470,8 +494,10 @@ public sealed class PlayerAuthenticationBoundaryTests
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://api.example.test") };
         var client = new PlayerApiClient(http, new FixedAuthenticationStateProvider(principal), new StubAssertionIssuer());
 
-        Assert.Equal(PlayerApiOutcome.AuthenticationRequired,
-            (await client.SendAsync<object>(new HttpRequestMessage(HttpMethod.Get, "/api/v1/slates"))).Outcome);
+        var unauthorized = await client.SendAsync<object>(new HttpRequestMessage(HttpMethod.Get, "/api/v1/slates"));
+        Assert.Equal(PlayerApiOutcome.AuthenticationRequired, unauthorized.Outcome);
+        Assert.Equal("The Player API did not authorize this request. Your Player session may still be active; refresh or contact support.",
+            unauthorized.Message);
         Assert.Equal(PlayerApiOutcome.Forbidden,
             (await client.SendAsync<object>(new HttpRequestMessage(HttpMethod.Get, "/api/v1/slates"))).Outcome);
         Assert.Equal(PlayerApiOutcome.Conflict,
@@ -524,6 +550,28 @@ public sealed class PlayerAuthenticationBoundaryTests
         Assert.Equal((int)HttpStatusCode.OK, result.StatusCode);
         Assert.Equal("{\"result\":\"ok\"}", Encoding.UTF8.GetString(result.Body));
         Assert.DoesNotContain("signed-test-assertion", Encoding.UTF8.GetString(result.Body), StringComparison.Ordinal);
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task ApiForwardingPreservesUnauthorizedStatusReturnedByTheUpstreamApi()
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString("D")),
+            new Claim(ClaimTypes.Role, ScoutRoles.Player)
+        ], "player-cookie"));
+        using var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent("{\"title\":\"Bearer assertion rejected\",\"status\":401}",
+                Encoding.UTF8, "application/problem+json")
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://api.example.test") };
+        var client = new PlayerApiClient(http, new FixedAuthenticationStateProvider(principal), new StubAssertionIssuer());
+
+        var result = await client.ForwardAsync(new HttpRequestMessage(HttpMethod.Get, "/api/v1/leagues/me"), principal);
+
+        Assert.Equal((int)HttpStatusCode.Unauthorized, result.StatusCode);
+        Assert.Contains("Bearer assertion rejected", Encoding.UTF8.GetString(result.Body), StringComparison.Ordinal);
         Assert.Equal(1, handler.RequestCount);
     }
 
