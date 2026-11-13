@@ -12,13 +12,22 @@ public static class PlayerAuthEndpoints
     public static WebApplication MapPlayerAuthEndpoints(this WebApplication app)
     {
         app.MapGet("/auth/antiforgery", (HttpContext context, IAntiforgery antiforgery) =>
-            Results.Ok(new { token = antiforgery.GetAndStoreTokens(context).RequestToken }));
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new { token = antiforgery.GetAndStoreTokens(context).RequestToken });
+        });
         app.MapPost("/auth/login", Login);
         app.MapPost("/auth/logout", Logout).RequireAuthorization("Player");
-        app.MapGet("/auth/session", (ClaimsPrincipal user) => Results.Ok(new
+        app.MapGet("/auth/session", (HttpContext context, ClaimsPrincipal user) =>
         {
-            userId = user.FindFirstValue(ClaimTypes.NameIdentifier)
-        })).RequireAuthorization("Player");
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new
+            {
+                userId = user.FindFirstValue(ClaimTypes.NameIdentifier),
+                displayName = user.FindFirstValue(ClaimTypes.GivenName),
+                roles = new[] { ScoutRoles.Player }
+            });
+        }).RequireAuthorization("Player");
         return app;
     }
 

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.Extensions.FileProviders;
 using SaturdayScout.Infrastructure;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Player;
@@ -63,11 +64,17 @@ builder.Services.AddAuthentication(options =>
             context, TimeSpan.FromHours(playerCookie.AbsoluteTimeoutHours), PlayerAuthDefaults.Scheme, ScoutRoles.Player);
         options.Events.OnRedirectToLogin = context =>
         {
+            if (IsBffOrSessionPath(context.Request.Path))
+                return WriteAuthenticationProblemAsync(context.HttpContext, StatusCodes.Status401Unauthorized,
+                    "Authentication is required.");
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return Task.CompletedTask;
         };
         options.Events.OnRedirectToAccessDenied = context =>
         {
+            if (IsBffOrSessionPath(context.Request.Path))
+                return WriteAuthenticationProblemAsync(context.HttpContext, StatusCodes.Status403Forbidden,
+                    "Player access is required.");
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return Task.CompletedTask;
         };
@@ -87,12 +94,60 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/bff") ||
+        context.Request.Path.Equals(new PathString("/auth/session")))
+        context.Response.Headers.CacheControl = "no-store";
+    await next();
+});
+var reactStaticRoot = Path.Combine(builder.Environment.ContentRootPath, "wwwroot", "react");
+var reactEntryPoint = Path.Combine(reactStaticRoot, "index.html");
+if (File.Exists(reactEntryPoint))
+{
+    var reactFiles = new PhysicalFileProvider(reactStaticRoot);
+    app.Lifetime.ApplicationStopped.Register(reactFiles.Dispose);
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = reactFiles,
+        RequestPath = "/react",
+        ContentTypeProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider
+        {
+            Mappings = { [".webmanifest"] = "application/manifest+json" }
+        }
+    });
+}
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
 app.MapPlayerAuthEndpoints();
+app.MapPlayerBffEndpoints();
 app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
+if (File.Exists(reactEntryPoint))
+{
+    // ASP.NET Core route matching treats a trailing slash as optional, so a
+    // redirect from /react to /react/ also matches /react/ and loops. Serve
+    // the entry point at either spelling; client routes use the scoped fallback.
+    app.MapGet("/react", () => Results.File(reactEntryPoint, "text/html"));
+    app.MapGet("/react/{**path:nonfile}", () => Results.File(reactEntryPoint, "text/html"));
+}
 app.Run();
+
+static bool IsBffOrSessionPath(PathString path) =>
+    path.StartsWithSegments("/bff") || path.Equals(new PathString("/auth/session"));
+
+static async Task WriteAuthenticationProblemAsync(HttpContext context, int statusCode, string title)
+{
+    context.Response.StatusCode = statusCode;
+    context.Response.ContentType = "application/problem+json";
+    context.Response.Headers.CacheControl = "no-store";
+    await context.Response.WriteAsJsonAsync(new Microsoft.AspNetCore.Mvc.ProblemDetails
+    {
+        Type = "about:blank",
+        Title = title,
+        Status = statusCode
+    }, options: null, contentType: "application/problem+json", cancellationToken: context.RequestAborted);
+}
 
 public partial class Program;

@@ -1,5 +1,17 @@
 # Player-to-API authentication boundary
 
+## Same-origin BFF routes
+
+`SaturdayScout.Player` serves the existing Blazor Player application and now also hosts the initial same-origin BFF surface for a future React client. The authenticated session is exposed at the existing `GET /auth/session` route; it returns only the user GUID, an optional given-name display claim, and the Player role, with `Cache-Control: no-store`. The existing `/auth/login`, `/auth/logout`, and `/auth/antiforgery` routes remain the only Player login/logout flow.
+
+React-facing API paths use `/bff/api/v1/*`. The Player host maps a fixed allowlist for league discovery, active slate, game browsing, slate and pick-sheet reads, leaderboard, draft save, and submission. It constructs the matching `/api/v1/*` API route internally. No caller-supplied backend URL or arbitrary API path is accepted. Administrator, league-creation, membership-management, and commissioner write routes are not proxied.
+
+All BFF API routes require the Player cookie and Player role. Cookie-authenticated writes (`PUT` picks and `POST` submit) require an antiforgery token from `GET /auth/antiforgery` in the `X-CSRF-TOKEN` header. They reject a mismatching `Origin`, require JSON, and cap JSON request bodies at 64 KiB. React fetch calls should use same-origin credentials. Private BFF responses are `no-store`.
+
+The BFF forwards the API's response status and body, including 204, 404, 409, and validation Problem Details. It does not forward the server-to-server Authorization header or response cookies. The API assertion remains issued and attached inside the Player server process. Upstream failures become generic 503 Problem Details; unexpected forwarding failures return generic 500 Problem Details without exception details.
+
+See [Milestone 6A.2 Stage 2](milestone-6a-stage-2.md) for the complete route inventory, local verification steps, and known hosting constraints.
+
 ## Trust flow
 
 The Player Blazor server is a backend-for-frontend. The browser holds only the Player-specific secure cookie. On each API call, the Player server reads the authenticated server-side principal, confirms it has the `Player` role and a GUID subject, and issues a signed RS256 JWT assertion. It sends the assertion in the `Authorization: Bearer` header to the configured API origin. Browser code never receives the assertion or signing key.
@@ -19,7 +31,7 @@ The Player server needs a private RSA PEM file of at least 3072 bits. Configure 
 - `ApiAssertion:ClientId` (normally `saturday-scout-player`)
 - `Player:ApiOrigin`
 
-The API receives only the public key PEM, issuer/audience/client ID, and key ID. Environment-variable names use `PlayerAssertions__PublicKeys__0__KeyId` and `PlayerAssertions__PublicKeys__0__PublicKeyPem`; add further indexed entries to overlap keys during rotation. The private key must never be configured on the API or checked into source control. Use HTTPS for non-Development API origins. Keep the private key readable only by the Player service identity, and provision it through the hosting secret/file mechanism.
+The API receives only the public key PEM, issuer/audience/client ID, and key ID. Environment-variable names use `PlayerAssertions__PublicKeys__0__KeyId` and `PlayerAssertions__PublicKeys__0__PublicKeyPem`; add further indexed entries to overlap keys during rotation. The API project has a `UserSecretsId` for local Development configuration, so the public key and key ID may also be stored with `dotnet user-secrets set --project src/SaturdayScout.Api`. The Player private key must never be configured on the API or checked into source control. Use HTTPS for non-Development API origins. Keep the private key readable only by the Player service identity, and provision it through the hosting secret/file mechanism.
 
 Example local key generation (run locally; do not commit either output):
 

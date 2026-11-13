@@ -1,0 +1,15 @@
+{
+  "id": "/react/",
+  "name": "Saturday Scout",
+  "short_name": "Scout",
+  "description": "Saturday Scout private college football picks league.",
+  "start_url": "/react/",
+  "scope": "/react/",
+  "display": "standalone",
+  "background_color": "#101827",
+  "theme_color": "#101827",
+  "icons": [
+    { "src": "/react/icons/scout-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/react/icons/scout-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

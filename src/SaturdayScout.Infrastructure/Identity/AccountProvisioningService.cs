@@ -17,16 +17,53 @@ public sealed class AccountProvisioningService(
 {
     private const string BootstrapMarkerClaim = "saturday_scout:bootstrap_admin";
 
+    /// <summary>
+    /// Returns the linked account when this exact development player has already been
+    /// provisioned. Inconsistent or partially-created accounts fail closed.
+    /// </summary>
+    public async Task<Guid?> FindExistingDevelopmentPlayerAsync(string email, string displayName,
+        Guid leagueId, Guid commissionerUserId, bool operatorApproved, bool emailOwnershipConfirmed,
+        CancellationToken ct)
+    {
+        ValidateDevelopmentPlayerRequest(email, displayName, leagueId, commissionerUserId,
+            operatorApproved, emailOwnershipConfirmed, password: null);
+        identityDb.Database.SetDbConnection(domainDb.Database.GetDbConnection(), contextOwnsConnection: false);
+        var normalizedEmail = users.NormalizeEmail(email.Trim());
+        var identityUser = await users.FindByEmailAsync(email.Trim());
+        if (identityUser is null)
+        {
+            if (await domainDb.Users.AsNoTracking().AnyAsync(x => x.Email != null &&
+                    x.Email.ToUpper() == email.Trim().ToUpper(), ct))
+                throw new InvalidOperationException("A domain user already uses this email without a linked Identity account.");
+            return null;
+        }
+
+        var domainUser = await domainDb.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == identityUser.Id, ct);
+        var leagueExists = await domainDb.Leagues.AsNoTracking().AnyAsync(x => x.Id == leagueId &&
+            x.CommissionerUserId == commissionerUserId, ct);
+        var commissionerExists = await domainDb.LeagueMembers.AsNoTracking().AnyAsync(x => x.LeagueId == leagueId &&
+            x.UserId == commissionerUserId && x.Role == MembershipRole.Commissioner, ct);
+        var membership = await domainDb.LeagueMembers.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.LeagueId == leagueId && x.UserId == identityUser.Id, ct);
+        var roles = await users.GetRolesAsync(identityUser);
+        if (domainUser is null || identityUser.EmailConfirmed is false ||
+            !string.Equals(identityUser.NormalizedEmail, normalizedEmail, StringComparison.Ordinal) ||
+            !string.Equals(domainUser.Email, email.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(domainUser.DisplayName, displayName.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(domainUser.ExternalSubjectId, $"identity:{identityUser.Id:N}", StringComparison.Ordinal) ||
+            !leagueExists || !commissionerExists || membership?.Role != MembershipRole.Member ||
+            !roles.Contains(ScoutRoles.Player) || roles.Contains(ScoutRoles.SystemAdministrator))
+            throw new InvalidOperationException("An account with this email exists but is not a complete matching development Player for the selected league.");
+
+        return identityUser.Id;
+    }
+
     public async Task<Guid> ProvisionDevelopmentPlayerAsync(string email, string displayName, string password,
         Guid leagueId, Guid commissionerUserId, bool operatorApproved, bool emailOwnershipConfirmed,
         CancellationToken ct)
     {
-        if (!operatorApproved || !emailOwnershipConfirmed)
-            throw new InvalidOperationException("Explicit local operator and email ownership confirmation are required.");
-        if (string.IsNullOrWhiteSpace(email) || email.Length > 256 ||
-            string.IsNullOrWhiteSpace(displayName) || displayName.Length > 120 ||
-            string.IsNullOrWhiteSpace(password) || leagueId == Guid.Empty || commissionerUserId == Guid.Empty)
-            throw new ArgumentException("Valid player details, league, commissioner, and password are required.");
+        ValidateDevelopmentPlayerRequest(email, displayName, leagueId, commissionerUserId,
+            operatorApproved, emailOwnershipConfirmed, password);
 
         identityDb.Database.SetDbConnection(domainDb.Database.GetDbConnection(), contextOwnsConnection: false);
         await using var tx = await domainDb.Database.BeginTransactionAsync(ct);
@@ -34,13 +71,18 @@ public sealed class AccountProvisioningService(
         await identityDb.Database.UseTransactionAsync(tx.GetDbTransaction(), ct);
         try
         {
-            if (!await domainDb.Leagues.AsNoTracking().AnyAsync(x => x.Id == leagueId, ct))
-                throw new InvalidOperationException("The selected development league does not exist.");
+            var existingId = await FindExistingDevelopmentPlayerAsync(email, displayName, leagueId,
+                commissionerUserId, operatorApproved, emailOwnershipConfirmed, ct);
+            if (existingId is { } existing) return existing;
+            if (!await domainDb.Leagues.AsNoTracking().AnyAsync(x => x.Id == leagueId &&
+                    x.CommissionerUserId == commissionerUserId, ct))
+                throw new InvalidOperationException("The selected development league or commissioner does not exist.");
             if (!await domainDb.LeagueMembers.AsNoTracking().AnyAsync(x => x.LeagueId == leagueId &&
                     x.UserId == commissionerUserId && x.Role == MembershipRole.Commissioner, ct))
                 throw new InvalidOperationException("The selected user is not the league commissioner.");
-            if (await users.FindByEmailAsync(email.Trim()) is not null)
-                throw new InvalidOperationException("An account already uses this email.");
+            if (await domainDb.Users.AsNoTracking().AnyAsync(x => x.Email != null &&
+                    x.Email.ToUpper() == email.Trim().ToUpper(), ct))
+                throw new InvalidOperationException("A domain user already uses this email without a linked Identity account.");
 
             var id = Guid.NewGuid();
             var externalSubjectId = $"identity:{id:N}";
@@ -78,6 +120,18 @@ public sealed class AccountProvisioningService(
         {
             await identityDb.Database.UseTransactionAsync(null, ct);
         }
+    }
+
+    private static void ValidateDevelopmentPlayerRequest(string email, string displayName, Guid leagueId,
+        Guid commissionerUserId, bool operatorApproved, bool emailOwnershipConfirmed, string? password)
+    {
+        if (!operatorApproved || !emailOwnershipConfirmed)
+            throw new InvalidOperationException("Explicit local operator and email ownership confirmation are required.");
+        if (string.IsNullOrWhiteSpace(email) || email.Length > 256 ||
+            string.IsNullOrWhiteSpace(displayName) || displayName.Length > 120 ||
+            (password is not null && string.IsNullOrWhiteSpace(password)) ||
+            leagueId == Guid.Empty || commissionerUserId == Guid.Empty)
+            throw new ArgumentException("Valid player details, league, and commissioner are required.");
     }
 
     public async Task<Guid> BootstrapFirstAdministratorAsync(string email, string displayName,
