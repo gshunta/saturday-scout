@@ -2,7 +2,7 @@ import { useLeagueSelection } from '../leagues/LeagueSelection';
 import { EmptyState, ErrorMessage, Loading } from '../components/States';
 
 export function LeaguePage() {
-  const { leagues, loading, error, selectedLeague, retryLeagues } = useLeagueSelection();
+  const { leagues, loading, error, selectedLeague, selectLeague, retryLeagues } = useLeagueSelection();
   if (loading) return <Loading label="Loading league membership…" />;
   if (error) return <ErrorMessage message={error.message} onRetry={() => void retryLeagues()} />;
   if (!leagues?.length) return <EmptyState title="No active league"><p>Your private league membership will appear here.</p></EmptyState>;
@@ -19,7 +19,13 @@ export function LeaguePage() {
         {leagues.map(league => (
           <article className={`panel league-item${league.id === selectedLeague?.id ? ' selected' : ''}`} key={league.id}>
             <span className="league-initial" aria-hidden="true">{league.name.slice(0, 1).toUpperCase()}</span>
-            <div><h2>{league.name}</h2><p className="muted">{league.id === selectedLeague?.id ? 'Selected' : 'Available'}</p></div>
+            <div className="league-item-details"><h2>{league.name}</h2><p className="muted">{league.id === selectedLeague?.id ? 'Selected' : 'Available'}</p></div>
+            {league.id === selectedLeague?.id
+              ? <span className="status-pill" aria-current="true">Current league</span>
+              : <button className="button button-secondary" type="button" aria-label={`Select ${league.name}`}
+                onClick={() => selectLeague(league.id)}>
+                Select
+              </button>}
           </article>
         ))}
       </div>

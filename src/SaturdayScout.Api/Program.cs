@@ -124,6 +124,9 @@ api.MapGet("/leagues/{leagueId:guid}/slates/active", async (Guid leagueId, HttpC
     var slate = await service.GetActiveCollegeSlateAsync(Actor(http), leagueId, ct);
     return slate is null ? Results.NoContent() : Results.Ok(slate);
 });
+api.MapGet("/leagues/{leagueId:guid}/slates/weeks", async (Guid leagueId, int season, HttpContext http,
+    IScoutService service, CancellationToken ct) =>
+    Results.Ok(await service.GetCollegeSlateWeeksAsync(Actor(http), leagueId, season, ct)));
 api.MapGet("/games", async (string sport, int season, int week, int? page, int? pageSize,
     HttpContext http, IScoutService service, CancellationToken ct) =>
     Results.Ok(await service.BrowseGamesAsync(Actor(http), sport, season, week, page ?? 1, pageSize ?? 50, ct)));

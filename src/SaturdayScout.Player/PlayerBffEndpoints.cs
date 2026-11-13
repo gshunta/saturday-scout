@@ -17,6 +17,10 @@ public static class PlayerBffEndpoints
         api.MapGet("/leagues/{leagueId:guid}/slates/active", (Guid leagueId, HttpContext context,
             IPlayerApiClient client, CancellationToken ct) =>
             ForwardAsync(context, client, HttpMethod.Get, $"/api/v1/leagues/{leagueId:D}/slates/active", null, ct));
+        api.MapGet("/leagues/{leagueId:guid}/slates/weeks", (Guid leagueId, HttpContext context,
+            IPlayerApiClient client, CancellationToken ct) =>
+            ForwardQueryAsync(context, client, ["season"], ct,
+                $"/api/v1/leagues/{leagueId:D}/slates/weeks"));
         api.MapGet("/games", (HttpContext context, IPlayerApiClient client, CancellationToken ct) =>
             ForwardQueryAsync(context, client, ["sport", "season", "week", "page", "pageSize"], ct));
         api.MapGet("/leagues/{leagueId:guid}", (Guid leagueId, HttpContext context,

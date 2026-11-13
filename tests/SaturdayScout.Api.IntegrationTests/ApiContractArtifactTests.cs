@@ -19,6 +19,7 @@ public sealed class ApiContractArtifactTests
                  {
                      "/api/v1/leagues/me",
                      "/api/v1/leagues/{leagueId}/slates/active",
+                     "/api/v1/leagues/{leagueId}/slates/weeks",
                      "/api/v1/slates/{slateId}/picks/me",
                      "/api/v1/slates/{slateId}/picks",
                      "/api/v1/slates/{slateId}/submit",

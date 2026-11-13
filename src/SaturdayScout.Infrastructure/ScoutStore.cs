@@ -77,6 +77,18 @@ public sealed class ScoutStore(SaturdayScoutDbContext db) : IScoutStore
             slate.Status.ToString(), slate.LockUtc, slate.PublishedUtc, games);
     }
 
+    public async Task<IReadOnlyList<int>> GetCollegeSlateWeeksAsync(Guid actorId, Guid leagueId, int season,
+        CancellationToken ct)
+    {
+        await RequireMember(actorId, leagueId, ct);
+        return await db.WeeklySlates.AsNoTracking()
+            .Where(x => x.LeagueId == leagueId && x.Sport == Sport.CollegeFootball && x.Season == season)
+            .Select(x => x.Week)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(ct);
+    }
+
     public async Task<IReadOnlyList<GameDto>> BrowseGamesAsync(Guid actorId, string sport, int season, int week,
         int page, int pageSize, CancellationToken ct)
     {
