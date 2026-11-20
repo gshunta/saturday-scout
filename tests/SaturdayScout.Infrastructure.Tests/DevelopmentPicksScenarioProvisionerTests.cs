@@ -62,8 +62,10 @@ public sealed class DevelopmentPicksScenarioProvisionerTests
             await identity.SaveChangesAsync();
 
             var provisioner = new DevelopmentPicksScenarioProvisioner(domain, identity);
-            var first = await provisioner.ProvisionAsync(leagueId, playerId, "react-e2e-test");
-            var repeated = await provisioner.ProvisionAsync(leagueId, playerId, "react-e2e-test");
+            var first = await provisioner.ProvisionAsync(leagueId, playerId, "react-e2e-test", 2026, 14);
+            var repeated = await provisioner.ProvisionAsync(leagueId, playerId, "react-e2e-test", 2026, 14);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                provisioner.ProvisionAsync(leagueId, playerId, "second-week-14", 2026, 14));
 
             Assert.True(first.UsesSyntheticGames);
             Assert.False(first.ReusedExistingSlate);
@@ -71,7 +73,8 @@ public sealed class DevelopmentPicksScenarioProvisionerTests
             Assert.Equal(first.SlateId, repeated.SlateId);
             Assert.Equal(first.LockUtc, repeated.LockUtc);
             Assert.True(first.LockUtc >= DateTimeOffset.UtcNow.AddHours(47));
-            Assert.True(first.Week > 0);
+            Assert.Equal(2026, first.Season);
+            Assert.Equal(14, first.Week);
 
             await using var verify = new SaturdayScoutDbContext(domainOptions);
             var slate = await verify.WeeklySlates.Include(x => x.Games).SingleAsync(x => x.Id == first.SlateId);

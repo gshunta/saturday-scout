@@ -35,10 +35,16 @@ public sealed class DevelopmentPicksScenarioProvisioner(
         Guid leagueId,
         Guid playerId,
         string scenarioKey,
+        int? requestedSeason = null,
+        int? requestedWeek = null,
         CancellationToken cancellationToken = default)
     {
         if (leagueId == Guid.Empty || playerId == Guid.Empty || !IsValidScenarioKey(scenarioKey))
             throw new InvalidOperationException("Supply valid league/player IDs and a scenario key containing only letters, digits, or hyphens.");
+        if (requestedSeason.HasValue != requestedWeek.HasValue ||
+            requestedSeason is <= 1900 || requestedSeason > DateTime.UtcNow.Year + 1 ||
+            requestedWeek is < 1 or > 30)
+            throw new InvalidOperationException("An explicit scenario season and week must be supplied together and be valid.");
 
         if (!await db.Leagues.AsNoTracking().AnyAsync(x => x.Id == leagueId, cancellationToken))
             throw new InvalidOperationException("The requested development league does not exist.");
@@ -63,10 +69,16 @@ public sealed class DevelopmentPicksScenarioProvisioner(
         {
             var now = await DatabaseNowAsync(cancellationToken);
             if (existing.LeagueId != leagueId || existing.Sport != Sport.CollegeFootball ||
+                (requestedSeason.HasValue && existing.Season != requestedSeason.Value) ||
+                (requestedWeek.HasValue && existing.Week != requestedWeek.Value) ||
                 existing.Status != SlateStatus.Published || existing.LockUtc is null || existing.LockUtc <= now ||
                 existing.Games.Count != 10 || existing.Games.Select(x => x.GameId).Distinct().Count() != 10)
                 throw new InvalidOperationException(
                     "This scenario key already exists but is no longer an active published test slate. Use a new scenario key; existing data was not changed.");
+
+            if (await db.PickSheets.AsNoTracking().AnyAsync(x => x.SlateId == existing.Id &&
+                    x.UserId == playerId && x.Status == PickSheetStatus.Submitted, cancellationToken))
+                throw new InvalidOperationException("The selected Player already has a submitted sheet for this scenario. Existing data was not changed.");
 
             return Result(existing, playerId, reused: true, usesSynthetic: await db.Games.AsNoTracking()
                 .Where(x => existing.Games.Select(g => g.GameId).Contains(x.Id))
@@ -76,7 +88,7 @@ public sealed class DevelopmentPicksScenarioProvisioner(
         var nowUtc = await DatabaseNowAsync(cancellationToken);
         var lockUtc = nowUtc.AddHours(MinimumLockLeadHours);
         var (season, week, games, usesSynthetic) = await SelectGamesAsync(leagueId, scenarioKey,
-            slateId, lockUtc, nowUtc, cancellationToken);
+            slateId, lockUtc, nowUtc, requestedSeason, requestedWeek, cancellationToken);
 
         var slate = new WeeklySlate(slateId, leagueId, Sport.CollegeFootball, season, week);
         slate.ReplaceGames(games);
@@ -95,20 +107,26 @@ public sealed class DevelopmentPicksScenarioProvisioner(
         Guid slateId,
         DateTimeOffset lockUtc,
         DateTimeOffset nowUtc,
+        int? requestedSeason,
+        int? requestedWeek,
         CancellationToken cancellationToken)
     {
-        var season = nowUtc.Year;
+        var season = requestedSeason ?? nowUtc.Year;
         var occupiedWeeks = await db.WeeklySlates.AsNoTracking()
             .Where(x => x.LeagueId == leagueId && x.Sport == Sport.CollegeFootball && x.Season == season)
             .Select(x => x.Week).ToListAsync(cancellationToken);
+        if (requestedWeek.HasValue && occupiedWeeks.Contains(requestedWeek.Value))
+            throw new InvalidOperationException("The requested league season/week already has a slate. Existing data was not changed.");
         var highestUsedWeek = await db.Games.AsNoTracking()
             .Where(x => x.Sport == Sport.CollegeFootball && x.Season == season)
             .Select(x => (int?)x.Week).MaxAsync(cancellationToken) ?? 0;
         highestUsedWeek = Math.Max(highestUsedWeek, occupiedWeeks.DefaultIfEmpty().Max());
 
-        var weekOrder = Enumerable.Range(1, 30)
-            .OrderBy(week => week > highestUsedWeek ? week : week + 30)
-            .ToArray();
+        var weekOrder = requestedWeek.HasValue
+            ? new[] { requestedWeek.Value }
+            : Enumerable.Range(1, 30)
+                .OrderBy(week => week > highestUsedWeek ? week : week + 30)
+                .ToArray();
         var eligibleGames = await db.Games.Where(x => x.Sport == Sport.CollegeFootball && x.Season == season &&
                 x.KickoffUtc > lockUtc && x.Status != GameStatus.Final &&
                 x.Status != GameStatus.Canceled && x.Status != GameStatus.NoContest)
@@ -123,7 +141,7 @@ public sealed class DevelopmentPicksScenarioProvisioner(
                 return (season, week, candidateGames, false);
         }
 
-        var syntheticWeek = weekOrder.FirstOrDefault(week => !occupiedWeeks.Contains(week));
+        var syntheticWeek = requestedWeek ?? weekOrder.FirstOrDefault(week => !occupiedWeeks.Contains(week));
         if (syntheticWeek == 0)
             throw new InvalidOperationException("No unoccupied college-football week is available for a development test slate.");
 

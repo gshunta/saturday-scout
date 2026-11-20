@@ -10,8 +10,8 @@ internal static class DevelopmentPicksScenarioCommand
     {
         if (!string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.Ordinal))
             return Fail("This command is available only when ASPNETCORE_ENVIRONMENT=Development.");
-        if (args.Length != 7 || args[0] != "--apply")
-            return Fail("Usage: dev-picks-scenario --apply --league-id GUID --player-id GUID --scenario-key KEY");
+        if (args.Length < 7 || args[0] != "--apply" || (args.Length - 1) % 2 != 0)
+            return Fail("Usage: dev-picks-scenario --apply --league-id GUID --player-id GUID --scenario-key KEY [--season YEAR --week WEEK]");
 
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         for (var index = 1; index < args.Length; index += 2)
@@ -19,12 +19,26 @@ internal static class DevelopmentPicksScenarioCommand
             if (index + 1 >= args.Length || !values.TryAdd(args[index], args[index + 1]))
                 return Fail("Scenario options are invalid or repeated.");
         }
-        if (values.Count != 3 || !values.TryGetValue("--league-id", out var leagueText) ||
+        if (values.Keys.Any(key => key is not ("--league-id" or "--player-id" or "--scenario-key" or "--season" or "--week")))
+            return Fail("Scenario options contain an unsupported option.");
+        if (values.Count is not (3 or 5) || !values.TryGetValue("--league-id", out var leagueText) ||
             !Guid.TryParse(leagueText, out var leagueId) ||
             !values.TryGetValue("--player-id", out var playerText) ||
             !Guid.TryParse(playerText, out var playerId) ||
             !values.TryGetValue("--scenario-key", out var scenarioKey))
             return Fail("Supply --league-id, --player-id, and --scenario-key.");
+        int? season = null;
+        int? week = null;
+        if (values.ContainsKey("--season") != values.ContainsKey("--week") ||
+            (values.ContainsKey("--season") &&
+             (!int.TryParse(values["--season"], out var parsedSeason) ||
+              !int.TryParse(values["--week"], out var parsedWeek))))
+            return Fail("Supply both --season YEAR and --week WEEK as valid integers, or omit both.");
+        if (values.ContainsKey("--season"))
+        {
+            season = int.Parse(values["--season"]);
+            week = int.Parse(values["--week"]);
+        }
 
         var connection = Environment.GetEnvironmentVariable("SATURDAY_SCOUT_DB_CONNECTION");
         if (string.IsNullOrWhiteSpace(connection))
@@ -53,7 +67,7 @@ internal static class DevelopmentPicksScenarioCommand
                 return Fail("Database migrations are pending. Apply them separately before running this command.");
 
             var result = await new DevelopmentPicksScenarioProvisioner(domain, identity)
-                .ProvisionAsync(leagueId, playerId, scenarioKey);
+                .ProvisionAsync(leagueId, playerId, scenarioKey, season, week);
             Console.WriteLine(result.ReusedExistingSlate
                 ? "Reused the matching active development scenario without changing it."
                 : "Created and published the development picks scenario.");
