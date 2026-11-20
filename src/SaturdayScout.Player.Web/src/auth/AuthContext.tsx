@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, type PropsWithChildren } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, getAntiforgeryToken, getPlayerSession, sessionQueryKey } from '../api/api';
@@ -8,6 +8,7 @@ interface AuthContextValue {
   session: PlayerSessionDto | null | undefined;
   loading: boolean;
   error: Error | null;
+  sessionExpired: boolean;
   signIn: (email: string, password: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   retrySession: () => Promise<void>;
@@ -18,6 +19,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: PropsWithChildren) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const lastResumeCheck = useRef(0);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const sessionQuery = useQuery({
     queryKey: sessionQueryKey,
     queryFn: getPlayerSession,
@@ -27,11 +30,56 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     const expireSession = () => {
-      queryClient.removeQueries({ predicate: query => query.queryKey[0] !== sessionQueryKey[0] });
+      // Keep the mounted page and its in-memory edits available while the
+      // player decides how to recover. Protected writes are gated separately.
+      setSessionExpired(true);
       queryClient.setQueryData(sessionQueryKey, null);
     };
     window.addEventListener('saturday-scout:unauthorized', expireSession);
     return () => window.removeEventListener('saturday-scout:unauthorized', expireSession);
+  }, [queryClient]);
+
+  useEffect(() => {
+    let active = true;
+    const revalidate = () => {
+      if (document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      // Focus, online, and visibility events often arrive together on mobile.
+      if (now - lastResumeCheck.current < 15_000) return;
+      lastResumeCheck.current = now;
+      // Read directly first so the explicit expired state is committed before
+      // replacing cached authenticated session data with null.
+      void getPlayerSession()
+        .then(session => {
+          if (!active) return;
+          if (!session) {
+            setSessionExpired(true);
+            queryClient.setQueryData(sessionQueryKey, null);
+            return;
+          }
+          queryClient.setQueryData(sessionQueryKey, session);
+          setSessionExpired(false);
+          // Refresh authoritative reads only; never retry a write on resume.
+          return Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['player-leagues'] }),
+            queryClient.invalidateQueries({ queryKey: ['active-player-slate'] }),
+            queryClient.invalidateQueries({ queryKey: ['player-pick-sheet'] }),
+          ]);
+        })
+        .catch(() => {
+          // A temporary network failure does not prove that the cookie expired.
+        });
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') revalidate(); };
+    window.addEventListener('focus', revalidate);
+    window.addEventListener('online', revalidate);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', revalidate);
+      window.removeEventListener('online', revalidate);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [queryClient]);
 
   const signIn = useCallback(async (email: string, password: string): Promise<boolean> => {
@@ -62,6 +110,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     const session = await getPlayerSession();
     if (!session) return false;
+    setSessionExpired(false);
     queryClient.setQueryData(sessionQueryKey, session);
     await queryClient.invalidateQueries({ predicate: query => query.queryKey[0] !== sessionQueryKey[0] });
     return true;
@@ -87,17 +136,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
     queryClient.clear();
     queryClient.setQueryData(sessionQueryKey, null);
+    setSessionExpired(false);
     navigate('/login', { replace: true });
   }, [navigate, queryClient]);
 
   const retrySession = useCallback(async () => {
-    await sessionQuery.refetch();
+    const result = await sessionQuery.refetch();
+    if (result.data === null) setSessionExpired(true);
   }, [sessionQuery]);
 
   const value: AuthContextValue = {
     session: sessionQuery.data,
     loading: sessionQuery.isPending,
     error: sessionQuery.error,
+    sessionExpired,
     signIn,
     signOut,
     retrySession,

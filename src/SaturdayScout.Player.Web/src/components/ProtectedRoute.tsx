@@ -1,11 +1,33 @@
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Link, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { LeagueSelectionProvider } from '../leagues/LeagueSelection';
 import { Loading } from './States';
 import { PlayerLayout } from './PlayerLayout';
+import { DraftGuardProvider } from '../picks/DraftGuard';
+import { useDraftGuard } from '../picks/DraftGuard';
+
+function SessionExpiredNotice() {
+  const { dirty } = useDraftGuard();
+  const location = useLocation();
+  return (
+    <section className="notice notice-error session-expired" role="alert" aria-live="assertive">
+      <div>
+        <h1>Your session expired</h1>
+        <p>{dirty
+          ? 'Your unsaved picks are still on this page while it remains open. They are not saved, and leaving or reloading may discard them.'
+          : 'Sign in again to continue.'}</p>
+      </div>
+      <Link
+        className="button button-primary"
+        to={{ pathname: '/login', search: `?returnUrl=${encodeURIComponent(location.pathname)}` }}
+        state={{ from: location.pathname }}
+      >Sign in again</Link>
+    </section>
+  );
+}
 
 export function ProtectedRoute() {
-  const { session, loading, error, retrySession } = useAuth();
+  const { session, loading, error, retrySession, sessionExpired } = useAuth();
   const location = useLocation();
 
   if (loading) return <Loading label="Restoring your Player session…" />;
@@ -18,11 +40,16 @@ export function ProtectedRoute() {
       </main>
     );
   }
-  if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!session && !sessionExpired) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
 
   return (
     <LeagueSelectionProvider>
-      <PlayerLayout><Outlet /></PlayerLayout>
+      <DraftGuardProvider>
+        <PlayerLayout>
+          {sessionExpired && <SessionExpiredNotice />}
+          <Outlet />
+        </PlayerLayout>
+      </DraftGuardProvider>
     </LeagueSelectionProvider>
   );
 }

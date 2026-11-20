@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { createBrowserRouter, Navigate, Route, RouterProvider, Routes } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { DashboardPage } from './pages/DashboardPage';
@@ -33,11 +33,13 @@ export function App() {
     },
   });
 
+  const router = createBrowserRouter([
+    { path: '*', element: <AuthProvider><PlayerRoutes /></AuthProvider> },
+  ], { basename: '/react' });
+
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/react">
-        <AuthProvider><PlayerRoutes /></AuthProvider>
-      </BrowserRouter>
+      <RouterProvider router={router} />
     </QueryClientProvider>
   );
 }
