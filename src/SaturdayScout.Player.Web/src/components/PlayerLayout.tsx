@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useLeagueSelection } from '../leagues/LeagueSelection';
+import { useDraftGuard } from '../picks/DraftGuard';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 
 const navigation = [
   { to: '/', label: 'Dashboard', end: true },
@@ -15,10 +17,14 @@ const navigation = [
 export function PlayerLayout({ children }: { children: ReactNode }) {
   const { session, signOut } = useAuth();
   const { leagues, selectedLeague, selectLeague } = useLeagueSelection();
+  const draftGuard = useDraftGuard();
+  const online = useOnlineStatus();
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
   async function handleSignOut() {
+    if (draftGuard.dirty && !window.confirm('You have unsaved picks. Sign out and leave this draft?')) return;
+    if (draftGuard.dirty) draftGuard.setDirty(false);
     setSigningOut(true);
     setSignOutError(null);
     try {
@@ -44,7 +50,13 @@ export function PlayerLayout({ children }: { children: ReactNode }) {
             aria-label="Select league"
             value={selectedLeague?.id ?? ''}
             disabled={!leagues?.length}
-            onChange={event => { selectLeague(event.target.value); }}
+            onChange={event => {
+              const nextId = event.target.value;
+              if (nextId === selectedLeague?.id) return;
+              if (draftGuard.dirty && !window.confirm('You have unsaved picks. Switch leagues and leave this draft?')) return;
+              if (draftGuard.dirty) draftGuard.setDirty(false);
+              selectLeague(nextId);
+            }}
           >
             {leagues?.length
               ? leagues.map(league => <option key={league.id} value={league.id}>{league.name}</option>)
@@ -56,6 +68,8 @@ export function PlayerLayout({ children }: { children: ReactNode }) {
           </button>
         </div>
       </header>
+
+      {!online && <div className="offline-banner" role="status">You are offline. Picks stay on this page; saving and submission are unavailable.</div>}
 
       {signOutError && <p className="global-error" role="alert">{signOutError}</p>}
 

@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { LeagueDto, PickDto, PickSheetDto, PlayerSessionDto, PlayerSlateDto } from '../api/contracts';
@@ -23,6 +23,7 @@ function json(value: unknown, status = 200): Response {
 
 function pickFetch(options: {
   sheet?: PickSheetDto | null;
+  leagues?: LeagueDto[];
   onSave?: (picks: PickDto[], version: number) => PickSheetDto;
   onSubmit?: (version: number) => PickSheetDto;
   slateResponse?: Response;
@@ -31,7 +32,7 @@ function pickFetch(options: {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'https://127.0.0.1:7276');
     if (url.pathname === '/auth/session') return json(session);
-    if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+    if (url.pathname === '/bff/api/v1/leagues/me') return json(options.leagues ?? [league]);
     if (url.pathname.endsWith('/slates/active')) return options.slateResponse ?? json(slate);
     if (url.pathname.endsWith('/picks/me')) return currentSheet ? json(currentSheet) : json({ title: 'Not found' }, 404);
     if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
@@ -103,6 +104,422 @@ describe('React Picks workflow', () => {
     expect(await screen.findByText('Draft saved. Your selections are available when you return.')).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/picks') )).toBe(true);
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/picks') && init?.method === 'PUT')).toBe(true);
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+  });
+
+  it('warns before route navigation and preserves or discards local changes only after the choice', async () => {
+    pickFetch({});
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    await user.click(screen.getByRole('link', { name: 'Standings' }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('unsaved picks'));
+    expect(screen.getByRole('heading', { name: 'Week 12 picks' })).toBeTruthy();
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole('link', { name: 'Standings' }));
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Standings' }).getAttribute('aria-current')).toBe('page'));
+    confirm.mockRestore();
+  });
+
+  it('does not switch the selected league when the player cancels an unsaved-draft warning', async () => {
+    const secondLeague: LeagueDto = { id: 'league-2', name: 'Saturday Scout QA', commissionerUserId: 'c1' };
+    pickFetch({ leagues: [league, secondLeague] });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    const leagueSelect = screen.getByRole('combobox', { name: 'Select league' });
+    await user.selectOptions(leagueSelect, 'league-2');
+    expect(confirm).toHaveBeenCalled();
+    expect(leagueSelect).toHaveProperty('value', league.id);
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    confirm.mockRestore();
+  });
+
+  it('requires confirmation before switching leagues with an unsaved draft', async () => {
+    const secondLeague: LeagueDto = { id: 'league-2', name: 'Saturday Scout QA', commissionerUserId: 'c1' };
+    pickFetch({ leagues: [league, secondLeague] });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    const leagueSelect = screen.getByRole('combobox', { name: 'Select league' });
+    await user.selectOptions(leagueSelect, 'league-2');
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('unsaved picks'));
+    expect(leagueSelect).toHaveProperty('value', league.id);
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    confirm.mockReturnValue(true);
+    await user.selectOptions(leagueSelect, 'league-2');
+    await waitFor(() => expect(leagueSelect).toHaveProperty('value', secondLeague.id));
+    confirm.mockRestore();
+  });
+
+  it('preserves local selections and does not retry when a failed save was not committed', async () => {
+    let writes = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return json({ title: 'Not found' }, 404);
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
+      if (url.pathname.endsWith('/picks') && init?.method === 'PUT') { writes++; return json({ title: 'Unavailable' }, 503); }
+      throw new Error(url.pathname);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    await user.click(screen.getByRole('button', { name: 'Save draft' }));
+    expect(await screen.findByRole('button', { name: 'Check server version' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save draft' })).toHaveProperty('disabled', true);
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+    expect(writes).toBe(1);
+  });
+
+  it('reconciles a committed draft after the browser loses the successful save response without retrying', async () => {
+    let serverSheet: PickSheetDto | null = null;
+    let writes = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return serverSheet ? json(serverSheet) : json({ title: 'Not found' }, 404);
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
+      if (url.pathname.endsWith('/picks') && init?.method === 'PUT') {
+        writes++;
+        const body = JSON.parse(String(init.body)) as { picks: PickDto[]; expectedVersion: number };
+        serverSheet = { id: 'sheet-1', slateId: slate.id, status: 'Draft', submittedUtc: null,
+          version: body.expectedVersion + 1, picks: body.picks };
+        throw new TypeError('Simulated lost response after server commit');
+      }
+      throw new Error(url.pathname);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    await user.click(screen.getByRole('button', { name: 'Save draft' }));
+
+    expect(await screen.findByText('The server confirms this draft is saved.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save draft' })).toHaveProperty('disabled', true);
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    expect(writes).toBe(1);
+    expect(fetchMock.mock.calls.filter(([request, requestInit]) =>
+      String(request).endsWith('/picks') && requestInit?.method === 'PUT')).toHaveLength(1);
+  });
+
+  it('reconciles a committed final submission after its response is lost and never posts again', async () => {
+    let serverSheet: PickSheetDto | null = null;
+    let submitWrites = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return serverSheet ? json(serverSheet) : json({ title: 'Not found' }, 404);
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
+      if (url.pathname.endsWith('/picks') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { picks: PickDto[]; expectedVersion: number };
+        serverSheet = { id: 'sheet-1', slateId: slate.id, status: 'Draft', submittedUtc: null,
+          version: body.expectedVersion + 1, picks: body.picks };
+        return json(serverSheet);
+      }
+      if (url.pathname.endsWith('/submit') && init?.method === 'POST') {
+        submitWrites++;
+        serverSheet = { ...serverSheet!, status: 'Submitted', submittedUtc: '2099-11-14T20:00:00Z',
+          version: serverSheet!.version + 1 };
+        throw new TypeError('Simulated lost response after server commit');
+      }
+      throw new Error(url.pathname);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    for (let index = 1; index <= 10; index++) {
+      await user.click(await screen.findByRole('radio', { name: new RegExp(`^Away ${index} A${index}`) }));
+      await user.selectOptions(screen.getByLabelText(`Confidence rank for Away ${index} at Home ${index}`), String(index));
+    }
+    await user.click(screen.getByRole('button', { name: 'Save draft' }));
+    expect(await screen.findByText('Draft saved. Your selections are available when you return.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Review submission' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm submission' }));
+
+    expect(await screen.findByText(/Your picks were submitted\. The server confirms this sheet is read-only\./)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).closest('fieldset')?.hasAttribute('disabled')).toBe(true);
+    expect(submitWrites).toBe(1);
+    expect(fetchMock.mock.calls.filter(([request, requestInit]) =>
+      String(request).endsWith('/submit') && requestInit?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('reconciles an HTTP 503 after the server committed submission and renders authoritative read-only state', async () => {
+    let serverSheet: PickSheetDto = {
+      id: 'sheet-1', slateId: slate.id, status: 'Draft', submittedUtc: null, version: 7,
+      picks: slate.games.map(game => ({ gameId: game.gameId, selectedTeamId: game.awayTeamId,
+        confidenceRank: game.displayOrder })),
+    };
+    let submitPosts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return json(serverSheet);
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
+      if (url.pathname.endsWith('/submit') && init?.method === 'POST') {
+        submitPosts++;
+        serverSheet = { ...serverSheet, status: 'Submitted', submittedUtc: '2026-11-20T15:00:00Z', version: 8 };
+        return json({ title: 'The request outcome could not be confirmed.' }, 503);
+      }
+      throw new Error(`Unexpected request: ${url.pathname} ${init?.method ?? 'GET'}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('button', { name: 'Review submission' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm submission' }));
+
+    expect(await screen.findByText('Your picks were submitted. The server confirms this sheet is read-only.')).toBeTruthy();
+    expect(screen.getByText('Your submitted picks are read-only.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm submission' })).toBeNull();
+    expect(screen.getAllByRole('radio').every(control =>
+      control.closest('fieldset')?.hasAttribute('disabled'))).toBe(true);
+    expect(serverSheet.status).toBe('Submitted');
+    expect(serverSheet.picks).toHaveLength(10);
+    expect(submitPosts).toBe(1);
+    expect(fetchMock.mock.calls.filter(([request, requestInit]) =>
+      String(request).endsWith('/submit') && requestInit?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('does not report Submitted when an HTTP 503 is reconciled to a server Draft', async () => {
+    const serverSheet: PickSheetDto = {
+      id: 'sheet-1', slateId: slate.id, status: 'Draft', submittedUtc: null, version: 7,
+      picks: slate.games.map(game => ({ gameId: game.gameId, selectedTeamId: game.awayTeamId,
+        confidenceRank: game.displayOrder })),
+    };
+    let submitPosts = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return json(serverSheet);
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
+      if (url.pathname.endsWith('/submit') && init?.method === 'POST') {
+        submitPosts++;
+        return json({ title: 'The request outcome could not be confirmed.' }, 503);
+      }
+      throw new Error(`Unexpected request: ${url.pathname} ${init?.method ?? 'GET'}`);
+    }));
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('button', { name: 'Review submission' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm submission' }));
+
+    expect(await screen.findByRole('button', { name: 'Load server version' })).toBeTruthy();
+    expect(screen.queryByText('Your picks were submitted. The server confirms this sheet is read-only.')).toBeNull();
+    expect(screen.getByText('Open')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Confirm submission' })).toHaveProperty('disabled', true);
+    expect(serverSheet.status).toBe('Draft');
+    expect(submitPosts).toBe(1);
+  });
+
+  it('disables save and submit offline without discarding selections', async () => {
+    let current: PickSheetDto | null = null;
+    let submitWrites = 0;
+    let sessionReads = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') { sessionReads++; return json(session); }
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return current ? json(current) : json({ title: 'Not found' }, 404);
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf-test' });
+      if (url.pathname.endsWith('/picks') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { picks: PickDto[]; expectedVersion: number };
+        current = { id: 'sheet-1', slateId: slate.id, status: 'Draft', submittedUtc: null, version: body.expectedVersion + 1, picks: body.picks };
+        return json(current);
+      }
+      if (url.pathname.endsWith('/submit') && init?.method === 'POST') { submitWrites++; return json(current); }
+      throw new Error(url.pathname);
+    }));
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    for (let i = 1; i <= 10; i++) {
+      await user.click(await screen.findByRole('radio', { name: new RegExp(`^Away ${i} A${i}`) }));
+      await user.selectOptions(screen.getByLabelText(`Confidence rank for Away ${i} at Home ${i}`), String(i));
+    }
+    await user.click(screen.getByRole('button', { name: 'Save draft' }));
+    await screen.findByText('Draft saved. Your selections are available when you return.');
+    await user.click(screen.getByRole('button', { name: 'Review submission' }));
+    expect(screen.getByRole('button', { name: 'Confirm submission' })).toHaveProperty('disabled', false);
+    fireEvent(window, new Event('offline'));
+    expect(await screen.findByText(/You are offline/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Confirm submission' })).toHaveProperty('disabled', true);
+    expect(submitWrites).toBe(0);
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent(window, new Event('online'));
+    await waitFor(() => expect(screen.queryByText(/You are offline/)).toBeNull());
+    await waitFor(() => expect(sessionReads).toBeGreaterThan(1));
+  });
+
+  it('disables Save Draft offline while preserving dirty picks in memory', async () => {
+    pickFetch({});
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    fireEvent(window, new Event('offline'));
+    expect(await screen.findByText(/You are offline/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save draft' })).toHaveProperty('disabled', true);
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent(window, new Event('online'));
+    await waitFor(() => expect(screen.queryByText(/You are offline/)).toBeNull());
+  });
+
+  it('preserves dirty local picks and enters conflict when another session submits during resume', async () => {
+    let current: PickSheetDto = { id: 'sheet-1', slateId: slate.id, status: 'Draft', submittedUtc: null, version: 1, picks: [] };
+    let initialReads = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) {
+        initialReads++;
+        return json(current);
+      }
+      throw new Error(url.pathname);
+    }));
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '2');
+    current = { ...current, status: 'Submitted', submittedUtc: '2099-11-14T20:00:00Z', version: 2,
+      picks: [{ gameId: 'game-1', selectedTeamId: 'home-1', confidenceRank: 4 }] };
+    fireEvent(document, new Event('visibilitychange'));
+    expect(await screen.findByText(/submitted in another session/i)).toBeTruthy();
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('button', { name: 'Load server version' })).toBeTruthy();
+    expect(initialReads).toBeGreaterThan(1);
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+  });
+
+  it('refreshes lock state on resume and keeps unsaved picks read-only without losing them', async () => {
+    let activeReads = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return json(session);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(activeReads++ === 0 ? slate : { ...slate, lockUtc: '2000-01-01T00:00:00Z' });
+      if (url.pathname.endsWith('/picks/me')) return json({ title: 'Not found' }, 404);
+      throw new Error(url.pathname);
+    }));
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await user.click(await screen.findByRole('radio', { name: /^Away 1 A1/ }));
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '2');
+    fireEvent(document, new Event('visibilitychange'));
+    expect(await screen.findByText('This slate is locked. Existing picks remain visible, but changes and submissions are disabled.')).toBeTruthy();
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    expect(activeReads).toBeGreaterThan(1);
+  });
+
+  it('shows a session-expired state after foreground focus returns HTTP 401, preserving picks and blocking writes', async () => {
+    let checks = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return ++checks === 1 ? json(session) : json({ title: 'Unauthorized' }, 401);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return json({ title: 'Not found' }, 404);
+      throw new Error(url.pathname);
+    }));
+    renderPlayerRoute('/picks');
+    await screen.findByRole('heading', { name: 'Week 12 picks' });
+    const user = userEvent.setup();
+    const winner = screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement;
+    await user.click(winner);
+    await user.selectOptions(screen.getByLabelText('Confidence rank for Away 1 at Home 1'), '1');
+    fireEvent(window, new Event('focus'));
+    expect(await screen.findByRole('heading', { name: 'Your session expired' })).toBeTruthy();
+    expect(screen.getByText(/Your unsaved picks are still on this page/)).toBeTruthy();
+    expect((screen.getByRole('radio', { name: /^Away 1 A1/ }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save draft' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Review submission' })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('link', { name: 'Sign in again' })).toBeTruthy();
+    expect(checks).toBeGreaterThan(1);
+  });
+
+  it('requires explicit sign-in recovery and restores protected access after reauthentication', async () => {
+    let authenticated = true;
+    let sessionChecks = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') {
+        sessionChecks++;
+        return authenticated && sessionChecks !== 2 ? json(session) : json({ title: 'Unauthorized' }, 401);
+      }
+      if (url.pathname === '/auth/antiforgery') return json({ token: 'csrf' });
+      if (url.pathname === '/auth/login' && init?.method === 'POST') { authenticated = true; return new Response(null, { status: 200 }); }
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return json({ title: 'Not found' }, 404);
+      throw new Error(url.pathname);
+    }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const user = userEvent.setup();
+    renderPlayerRoute('/picks');
+    await screen.findByRole('heading', { name: 'Week 12 picks' });
+    await user.click(screen.getByRole('radio', { name: /^Away 1 A1/ }));
+    fireEvent(document, new Event('visibilitychange'));
+    const recover = await screen.findByRole('link', { name: 'Sign in again' });
+    await user.click(recover);
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('unsaved picks'));
+    expect(screen.queryByRole('heading', { name: 'Sign in' })).toBeNull();
+    await user.click(screen.getByRole('link', { name: 'Sign in again' }));
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeTruthy();
+    await user.type(screen.getByLabelText('Email'), 'player@example.test');
+    await user.type(screen.getByLabelText('Password'), 'not-a-real-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Your session expired' })).toBeNull();
+    expect(await screen.findByRole('link', { name: 'Open Picks' })).toBeTruthy();
+  });
+
+  it('does not mark the session expired when foreground revalidation gets a temporary server error', async () => {
+    let checks = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'https://127.0.0.1:7276');
+      if (url.pathname === '/auth/session') return ++checks === 1 ? json(session) : json({ title: 'Unavailable' }, 503);
+      if (url.pathname === '/bff/api/v1/leagues/me') return json([league]);
+      if (url.pathname.endsWith('/slates/active')) return json(slate);
+      if (url.pathname.endsWith('/picks/me')) return json({ title: 'Not found' }, 404);
+      throw new Error(url.pathname);
+    }));
+    renderPlayerRoute('/picks');
+    await screen.findByRole('heading', { name: 'Week 12 picks' });
+    fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() => expect(checks).toBeGreaterThan(1));
+    expect(screen.queryByRole('heading', { name: 'Your session expired' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save draft' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('heading', { name: 'Week 12 picks' })).toBeTruthy();
   });
 
   it('shows missing and duplicate-rank validation during review without submitting', async () => {
@@ -238,7 +655,7 @@ describe('React Picks workflow', () => {
     expect((screen.getByRole('radio', { name: /^Away 1 A1/ })).closest('fieldset')?.hasAttribute('disabled')).toBe(true);
   });
 
-  it('routes a confirmed expired session to login and displays forbidden responses safely', async () => {
+  it('shows confirmed expiration from a BFF 401 and displays forbidden responses safely', async () => {
     let sessionChecks = 0;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), 'https://127.0.0.1:7276');
@@ -248,7 +665,7 @@ describe('React Picks workflow', () => {
       throw new Error(url.pathname);
     }));
     const expiredView = renderPlayerRoute('/picks');
-    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Your session expired' })).toBeTruthy();
     expiredView.unmount();
 
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

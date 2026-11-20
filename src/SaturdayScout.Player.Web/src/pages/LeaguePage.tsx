@@ -1,8 +1,10 @@
 import { useLeagueSelection } from '../leagues/LeagueSelection';
 import { EmptyState, ErrorMessage, Loading } from '../components/States';
+import { useDraftGuard } from '../picks/DraftGuard';
 
 export function LeaguePage() {
   const { leagues, loading, error, selectedLeague, selectLeague, retryLeagues } = useLeagueSelection();
+  const draftGuard = useDraftGuard();
   if (loading) return <Loading label="Loading league membership…" />;
   if (error) return <ErrorMessage message={error.message} onRetry={() => void retryLeagues()} />;
   if (!leagues?.length) return <EmptyState title="No active league"><p>Your private league membership will appear here.</p></EmptyState>;
@@ -23,7 +25,11 @@ export function LeaguePage() {
             {league.id === selectedLeague?.id
               ? <span className="status-pill" aria-current="true">Current league</span>
               : <button className="button button-secondary" type="button" aria-label={`Select ${league.name}`}
-                onClick={() => selectLeague(league.id)}>
+                onClick={() => {
+                  if (draftGuard.dirty && !window.confirm('You have unsaved picks. Switch leagues and leave this draft?')) return;
+                  if (draftGuard.dirty) draftGuard.setDirty(false);
+                  selectLeague(league.id);
+                }}>
                 Select
               </button>}
           </article>

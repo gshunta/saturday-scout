@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useBlocker } from 'react-router-dom';
 import { ApiError, getActiveSlate, getMyPickSheet, saveMyPickSheet, submitMyPickSheet } from '../api/api';
 import type { PickDto, PickSheetDto, PlayerSlateDto } from '../api/contracts';
 import { EmptyState, ErrorMessage, Loading } from '../components/States';
 import { useLeagueSelection } from '../leagues/LeagueSelection';
 import { formatLocalDateTime } from '../utils/dateTime';
+import { useDraftGuard } from '../picks/DraftGuard';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { useAuth } from '../auth/AuthContext';
 
 interface DraftRow { teamId: string; rank: string }
 type Draft = Record<string, DraftRow>;
+interface ServerBaseline { slateId: string; version: number; status: string | null; draft: Draft }
 const blankDraft = (): Draft => ({});
 
 function picksFromDraft(slate: PlayerSlateDto, draft: Draft): PickDto[] {
@@ -61,6 +66,9 @@ function errorText(error: unknown): string {
 export function PicksPage() {
   const { leagues, loading: leaguesLoading, error: leaguesError, selectedLeague, retryLeagues } = useLeagueSelection();
   const queryClient = useQueryClient();
+  const { setDirty } = useDraftGuard();
+  const online = useOnlineStatus();
+  const { sessionExpired } = useAuth();
   const slateQuery = useQuery({
     queryKey: ['active-player-slate', selectedLeague?.id],
     queryFn: () => getActiveSlate(selectedLeague!.id),
@@ -74,6 +82,7 @@ export function PicksPage() {
   });
   const sheet = sheetQuery.data ?? null;
   const [draft, setDraft] = useState<Draft>(blankDraft);
+  const [baseline, setBaseline] = useState<ServerBaseline | null>(null);
   const [initializedId, setInitializedId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -89,31 +98,102 @@ export function PicksPage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const isDirty = Boolean(slate && baseline?.slateId === slate.id && !sameDraft(draft, baseline.draft, slate));
+  const blocker = useBlocker(isDirty);
+
   useEffect(() => {
-    if (slate && sheetQuery.isSuccess && initializedId !== slate.id) {
-      setDraft(draftFromSheet(slate, sheet));
+    if (!slate || !sheetQuery.isSuccess) return;
+    const serverDraft = draftFromSheet(slate, sheet);
+    const revision: ServerBaseline = { slateId: slate.id, version: sheet?.version ?? 0, status: sheet?.status ?? null, draft: serverDraft };
+    if (initializedId !== slate.id || baseline?.slateId !== slate.id) {
+      setDraft(serverDraft);
+      setBaseline(revision);
       setInitializedId(slate.id);
       setConflict(false);
+      setError('');
+      return;
     }
-  }, [slate, sheet, sheetQuery.isSuccess, initializedId]);
+    if (baseline.version !== revision.version || baseline.status !== revision.status) {
+      if (!isDirty) {
+        setDraft(serverDraft);
+        setBaseline(revision);
+        setConflict(false);
+        setError('');
+      } else {
+        setConflict(true);
+        setError(revision.status === 'Submitted'
+          ? 'This sheet was submitted in another session. Your unsaved selections are preserved; load the submitted server version to continue.'
+          : 'The saved draft changed in another session. Your unsaved selections are preserved; load the server version before continuing.');
+      }
+    }
+  }, [slate, sheet, sheetQuery.isSuccess, initializedId, baseline, isDirty]);
 
-  const isDirty = Boolean(slate && initializedId === slate.id && !sameDraft(draft, draftFromSheet(slate, sheet), slate));
+  useEffect(() => {
+    setDirty(isDirty);
+    return () => setDirty(false);
+  }, [setDirty, isDirty]);
+
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!isDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [isDirty]);
+
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    if (window.confirm('You have unsaved picks. Leave this page and discard those unsaved changes?')) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
   const checks = useMemo(() => slate ? validation(slate, draft) : null, [slate, draft]);
   const locked = isLocked(slate, now);
   const submitted = sheet?.status === 'Submitted';
-  const readOnly = locked || submitted || conflict || !slate || initializedId !== slate.id;
+  const readOnly = locked || submitted || conflict || sessionExpired || !slate || initializedId !== slate.id;
   const saveIssues = checks && (checks.incomplete.length > 0 || checks.duplicateRanks.length > 0 || checks.invalidRanks.length > 0);
 
   const applyServerSheet = (next: PickSheetDto | null) => {
     if (!slate) return;
     queryClient.setQueryData(['player-pick-sheet', slate.id], next);
-    setDraft(draftFromSheet(slate, next));
+    const serverDraft = draftFromSheet(slate, next);
+    setDraft(serverDraft);
+    setBaseline({ slateId: slate.id, version: next?.version ?? 0, status: next?.status ?? null, draft: serverDraft });
     setInitializedId(slate.id);
     setConflict(false);
   };
 
+  const checkServerVersion = async () => {
+    if (!slate) return;
+    setError('Checking the saved server version…');
+    try {
+      const [latest] = await Promise.all([
+        getMyPickSheet(slate.id),
+        queryClient.invalidateQueries({ queryKey: ['active-player-slate', slate.leagueId] }),
+      ]);
+      queryClient.setQueryData(['player-pick-sheet', slate.id], latest);
+      if (latest?.status === 'Submitted') {
+        applyServerSheet(latest);
+        setMessage('The server confirms this sheet was submitted.');
+        setError('');
+      } else if (sameDraft(draft, draftFromSheet(slate, latest), slate)) {
+        applyServerSheet(latest);
+        setMessage('The server confirms your draft is saved.');
+        setError('');
+      } else {
+        setBaseline({ slateId: slate.id, version: latest?.version ?? 0, status: latest?.status ?? null, draft: draftFromSheet(slate, latest) });
+        setConflict(true);
+        setError('The server has a different draft. Your local selections are preserved; load the server version before editing.');
+      }
+    } catch {
+      setConflict(true);
+      setError('Could not verify the server version. Your local selections are preserved and writes remain disabled. Check again when connected.');
+    }
+  };
+
   const handleSave = async () => {
-    if (!slate || readOnly || !isDirty || saveIssues || busyRef.current) return;
+    if (!online || !slate || readOnly || !isDirty || saveIssues || busyRef.current) return;
     busyRef.current = true; setSaving(true); setError(''); setMessage('Saving draft…');
     try {
       const saved = await saveMyPickSheet(slate.id, picksFromDraft(slate, draft), sheet?.version ?? 0);
@@ -122,6 +202,7 @@ export function PicksPage() {
     } catch (cause) {
       setError(errorText(cause)); setMessage('');
       if (cause instanceof ApiError && (cause.status === 409 || cause.status === null || cause.status >= 500)) {
+        setConflict(true);
         if (cause.status === 409) {
           await queryClient.invalidateQueries({ queryKey: ['active-player-slate', slate.leagueId] });
         }
@@ -136,13 +217,13 @@ export function PicksPage() {
               ? 'The server draft changed or the slate locked. Your local selections are preserved. Load the server version before continuing.'
               : 'The save response was interrupted. Your local selections are preserved; compare with the server version before trying again.');
           }
-        } catch { setError('The save result is uncertain. Your selections remain on this page. Check the server version before trying again.'); }
+        } catch { setConflict(true); setError('The save result is uncertain. Your selections remain on this page. Check the server version before trying again.'); }
       }
     } finally { busyRef.current = false; setSaving(false); }
   };
 
   const handleSubmit = async () => {
-    if (!slate || !sheet || sheet.status !== 'Draft' || !checks?.ready || isDirty || readOnly || busyRef.current) return;
+    if (!online || !slate || !sheet || sheet.status !== 'Draft' || !checks?.ready || isDirty || readOnly || busyRef.current) return;
     busyRef.current = true; setSubmitting(true); setError(''); setMessage('Submitting…');
     try {
       const result = await submitMyPickSheet(slate.id, sheet.version);
@@ -159,7 +240,7 @@ export function PicksPage() {
           if (latest?.status === 'Submitted') {
             applyServerSheet(latest); setMessage('Your picks were submitted. The server confirms this sheet is read-only.'); setError(''); setReviewOpen(false);
           } else setConflict(true);
-        } catch { setError('The submission result is uncertain. Check the server sheet before attempting another submission.'); }
+        } catch { setConflict(true); setError('The submission result is uncertain. Check the server sheet before attempting another submission.'); }
       }
     } finally { busyRef.current = false; setSubmitting(false); }
   };
@@ -187,7 +268,10 @@ export function PicksPage() {
         </span>
         <span className="muted" role="status">{submitted ? 'Your submitted picks are read-only.' : locked ? 'This slate no longer accepts changes.' : `${slate.games.length} games`}</span>
       </div>
-      {error && <div className="notice notice-error" role="alert">{error}{conflict && <button className="button button-secondary picks-resolve" type="button" onClick={() => { setDraft(draftFromSheet(slate, sheet)); setConflict(false); setMessage('Loaded the latest server draft.'); setError(''); }}>Load server version</button>}</div>}
+      {error && <div className="notice notice-error" role="alert">{error}{conflict && <div className="picks-resolve-actions">
+        <button className="button button-secondary picks-resolve" type="button" disabled={!online} onClick={() => void checkServerVersion()}>Check server version</button>
+        {sheet && <button className="button button-secondary picks-resolve" type="button" onClick={() => { applyServerSheet(sheet); setMessage(sheet.status === 'Submitted' ? 'Loaded the submitted server version.' : 'Loaded the latest server draft.'); setError(''); }}>Load server version</button>}
+      </div>}</div>}
       {message && <p className="notice picks-message" role="status">{message}</p>}
 
       {slate.games.length === 0 ? <EmptyState title="No games in this slate"><p>There are no games to pick right now.</p></EmptyState> : <div className="picks-game-list">
@@ -239,8 +323,8 @@ export function PicksPage() {
         : locked ? <div className="notice picks-locked-notice" role="status">This slate is locked. Existing picks remain visible, but changes and submissions are disabled.</div>
         : <div className="picks-actions">
           <span className="muted" role="status">{saving ? 'Saving…' : isDirty ? 'Unsaved changes' : sheet ? 'Draft saved' : 'No draft saved'}</span>
-          <button className="button button-secondary" type="button" disabled={!isDirty || Boolean(saveIssues) || saving || submitting || conflict} onClick={() => void handleSave()}>{saving ? 'Saving…' : 'Save draft'}</button>
-          <button className="button button-primary" type="button" disabled={saving || submitting || conflict} onClick={() => setReviewOpen(true)}>Review submission</button>
+          <button className="button button-secondary" type="button" disabled={!online || readOnly || !isDirty || Boolean(saveIssues) || saving || submitting || conflict} onClick={() => void handleSave()}>{saving ? 'Saving…' : 'Save draft'}</button>
+          <button className="button button-primary" type="button" disabled={!online || saving || submitting || conflict} onClick={() => setReviewOpen(true)}>Review submission</button>
         </div>}
 
       {reviewOpen && <div className="picks-review-backdrop">
@@ -266,7 +350,7 @@ export function PicksPage() {
           {!sheet && <p className="notice notice-error" role="alert">Save a draft before submitting.</p>}
           <div className="picks-actions">
             <button className="button button-secondary" type="button" disabled={submitting} onClick={() => setReviewOpen(false)}>Back to picks</button>
-            <button className="button button-primary" type="button" disabled={!checks?.ready || isDirty || !sheet || sheet.status !== 'Draft' || locked || submitting || saving || conflict} onClick={() => void handleSubmit()}>{submitting ? 'Submitting…' : 'Confirm submission'}</button>
+            <button className="button button-primary" type="button" disabled={!online || readOnly || !checks?.ready || isDirty || !sheet || sheet.status !== 'Draft' || locked || submitting || saving || conflict} onClick={() => void handleSubmit()}>{submitting ? 'Submitting…' : 'Confirm submission'}</button>
           </div>
         </section>
       </div>}

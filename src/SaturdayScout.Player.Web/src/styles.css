@@ -55,7 +55,10 @@ a { color: inherit; }
 .slate-summary { display: grid; justify-items: start; gap: 8px; margin-top: 20px; }
 .slate-week { font-size: 1.3rem; font-weight: 800; }
 .button { min-height: 46px; display: inline-flex; align-items: center; justify-content: center; padding: 0 17px; border: 1px solid transparent; border-radius: 11px; font-weight: 750; text-decoration: none; cursor: pointer; }
-.button:disabled { opacity: .58; cursor: wait; }
+.button:disabled {
+    opacity: .58;
+    cursor: not-allowed;
+}
 .button-primary { color: #0c1a25; background: var(--teal); }
 .button-primary:hover:not(:disabled) { background: #61d0b8; }
 .button-secondary { color: var(--text); border-color: var(--border); background: #ffffff0a; }
@@ -64,6 +67,10 @@ a { color: inherit; }
 .notice { padding: 14px 16px; border-radius: 12px; }
 .notice-error, .global-error { color: var(--danger); border: 1px solid #ffb4aa55; background: #8f33251f; }
 .notice-error p { margin: 0 0 12px; }
+.session-expired { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 16px auto; width: min(1180px, calc(100% - 32px)); }
+.session-expired h1 { margin: 0 0 6px; font-size: 1.15rem; }
+.session-expired p { margin: 0; }
+@media (max-width: 520px) { .session-expired { align-items: stretch; flex-direction: column; } }
 .global-error { margin: 10px auto; width: min(1180px, calc(100% - 32px)); padding: 12px 16px; border-radius: 12px; }
 .empty-state { padding: clamp(24px, 7vw, 56px); border: 1px dashed #66788f; border-radius: 18px; background: #222b3870; text-align: center; }
 .empty-state h2 { margin-top: 0; }
@@ -171,6 +178,8 @@ tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
 .picks-resolve { min-height: 40px; margin: 10px 0 0 10px; }
 .picks-actions .button { min-height: 48px; }
 .picks-team:focus-within { outline: 3px solid var(--teal); outline-offset: 2px; }
+.offline-banner { position: sticky; top: 0; z-index: 20; padding: 10px 14px; border-bottom: 1px solid #f4bd5a80; background: #3a2e19f2; color: #ffe0a6; text-align: center; font-weight: 700; }
+.picks-resolve-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 @media (max-width: 390px) {
   .picks-game-card { padding: 14px; }

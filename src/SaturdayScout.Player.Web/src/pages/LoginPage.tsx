@@ -25,8 +25,10 @@ export function LoginPage() {
         setError('Unable to sign in. Check your email and password or try again later.');
         return;
       }
-      const destination = (location.state as { from?: string } | null)?.from ?? '/';
-      navigate(destination.startsWith('/') ? destination : '/', { replace: true });
+      const stateDestination = (location.state as { from?: string } | null)?.from;
+      const queryDestination = new URLSearchParams(location.search).get('returnUrl');
+      const destination = stateDestination ?? queryDestination ?? '/';
+      navigate(destination.startsWith('/') && !destination.startsWith('//') ? destination : '/', { replace: true });
     } catch (cause) {
       setPassword('');
       setError(cause instanceof ApiError ? cause.message : 'Unable to sign in. Try again later.');
