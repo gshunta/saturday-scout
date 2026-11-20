@@ -1,6 +1,9 @@
 using System.Net.Http.Headers;
+using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Mvc;
+using SaturdayScout.Application;
 
 namespace SaturdayScout.Player;
 
@@ -39,11 +42,11 @@ public static class PlayerBffEndpoints
         api.MapPut("/slates/{slateId:guid}/picks", (Guid slateId, HttpContext context,
             IPlayerApiClient client, IAntiforgery antiforgery, CancellationToken ct) =>
             ForwardMutationAsync(context, client, antiforgery, HttpMethod.Put,
-                $"/api/v1/slates/{slateId:D}/picks", ct));
+                $"/api/v1/slates/{slateId:D}/picks", DevelopmentWriteOperation.SaveDraft, slateId, ct));
         api.MapPost("/slates/{slateId:guid}/submit", (Guid slateId, HttpContext context,
             IPlayerApiClient client, IAntiforgery antiforgery, CancellationToken ct) =>
             ForwardMutationAsync(context, client, antiforgery, HttpMethod.Post,
-                $"/api/v1/slates/{slateId:D}/submit", ct));
+                $"/api/v1/slates/{slateId:D}/submit", DevelopmentWriteOperation.SubmitPicks, slateId, ct));
 
         app.MapFallback("/bff/api/v1/{**path}", () =>
                 Problem(StatusCodes.Status404NotFound, "The BFF route was not found."))
@@ -80,7 +83,8 @@ public static class PlayerBffEndpoints
     }
 
     private static async Task<IResult> ForwardMutationAsync(HttpContext context, IPlayerApiClient client,
-        IAntiforgery antiforgery, HttpMethod method, string apiPath, CancellationToken ct)
+        IAntiforgery antiforgery, HttpMethod method, string apiPath, DevelopmentWriteOperation operation,
+        Guid slateId, CancellationToken ct)
     {
         if (!HasSameOrigin(context.Request))
             return Problem(StatusCodes.Status403Forbidden, "The request origin is not allowed.");
@@ -107,17 +111,46 @@ public static class PlayerBffEndpoints
 
         var content = new ByteArrayContent(body.ToArray());
         content.Headers.ContentType = MediaTypeHeaderValue.Parse(context.Request.ContentType!);
-        return await ForwardAsync(context, client, method, apiPath, content, ct);
+        var fault = context.RequestServices.GetRequiredService<DevelopmentAmbiguousWriteFault>();
+        var playerId = Guid.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedPlayerId)
+            ? parsedPlayerId
+            : Guid.Empty;
+        using var lease = fault.TryBegin(operation, playerId, slateId);
+        if (lease is null)
+            return await ForwardAsync(context, client, method, apiPath, content, ct);
+
+        if (!await IsAuthorizedQaSlateAsync(client, context.User, slateId,
+                fault.TargetSlateId, fault.TargetLeagueId, ct))
+            return await ForwardAsync(context, client, method, apiPath, content, ct);
+
+        return await ForwardAsync(context, client, method, apiPath, content, ct,
+            lease, operation, fault.TargetSlateId);
     }
 
     private static async Task<IResult> ForwardAsync(HttpContext context, IPlayerApiClient client,
-        HttpMethod method, string apiPath, HttpContent? content, CancellationToken ct)
+        HttpMethod method, string apiPath, HttpContent? content, CancellationToken ct,
+        DevelopmentAmbiguousWriteFault.Lease? faultLease = null,
+        DevelopmentWriteOperation? faultOperation = null,
+        Guid? faultTargetSlateId = null)
     {
         context.Response.Headers.CacheControl = "no-store";
         using var request = new HttpRequestMessage(method, apiPath) { Content = content };
         try
         {
             var response = await client.ForwardAsync(request, context.User, ct);
+            if (faultLease is not null && faultOperation is not null &&
+                faultTargetSlateId is not null &&
+                IsConfirmedWriteSuccess(response, faultOperation.Value, faultTargetSlateId.Value) &&
+                faultLease.Consume())
+            {
+                context.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("SaturdayScout.Player.Bff")
+                    .LogWarning("Development ambiguous-write simulation consumed after successful upstream {Operation} for the configured QA player and slate.",
+                        faultOperation.Value);
+                return Problem(StatusCodes.Status503ServiceUnavailable,
+                    "The request outcome could not be confirmed. Check the saved server state before continuing.");
+            }
+
             context.Response.StatusCode = response.StatusCode;
             if (!string.IsNullOrWhiteSpace(response.RetryAfter))
                 context.Response.Headers.RetryAfter = response.RetryAfter;
@@ -139,6 +172,46 @@ public static class PlayerBffEndpoints
                 .CreateLogger("SaturdayScout.Player.Bff")
                 .LogError("BFF API forwarding failed. Failure type: {FailureType}.", exception.GetType().Name);
             return Problem(StatusCodes.Status500InternalServerError, "The request could not be completed.");
+        }
+    }
+
+    private static async Task<bool> IsAuthorizedQaSlateAsync(IPlayerApiClient client, ClaimsPrincipal principal,
+        Guid slateId, Guid expectedSlateId, Guid expectedLeagueId, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/slates/{slateId:D}");
+        var response = await client.ForwardAsync(request, principal, ct);
+        if (response.StatusCode != StatusCodes.Status200OK) return false;
+        try
+        {
+            var slate = JsonSerializer.Deserialize<SlateDto>(response.Body,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return slate?.Id == expectedSlateId && slate.LeagueId == expectedLeagueId &&
+                   slate.Sport == "CollegeFootball";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsConfirmedWriteSuccess(PlayerApiForwardResponse response,
+        DevelopmentWriteOperation operation, Guid expectedSlateId)
+    {
+        if (response.StatusCode != StatusCodes.Status200OK) return false;
+        try
+        {
+            var sheet = JsonSerializer.Deserialize<PickSheetDto>(response.Body,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return sheet?.SlateId == expectedSlateId && (operation switch
+            {
+                DevelopmentWriteOperation.SaveDraft => sheet.Status == "Draft",
+                DevelopmentWriteOperation.SubmitPicks => sheet.Status == "Submitted",
+                _ => false
+            });
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

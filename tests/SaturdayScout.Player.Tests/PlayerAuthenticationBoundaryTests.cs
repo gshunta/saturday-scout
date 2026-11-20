@@ -17,6 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using SaturdayScout.Application;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Player;
 using Xunit;
@@ -386,6 +387,173 @@ public sealed class PlayerAuthenticationBoundaryTests
     }
 
     [Fact]
+    public async Task DevelopmentAmbiguousWriteFaultRunsOnlyAfterAuthorizedSuccessfulUpstreamWriteAndOnlyOnce()
+    {
+        var qaLeague = DevelopmentAmbiguousWriteFault.QaLeagueId;
+        var qaSlate = DevelopmentAmbiguousWriteFault.QaSlateId;
+        var qaPlayer = DevelopmentAmbiguousWriteFault.QaPlayerId;
+        var preflightLeague = qaLeague;
+        var nextWriteStatus = HttpStatusCode.Conflict;
+        var writes = 0;
+        var api = new StubPlayerApiClient
+        {
+            ResponseFactory = request =>
+            {
+                if (request.Method == HttpMethod.Get)
+                {
+                    var slate = new SlateDto(qaSlate, preflightLeague, "CollegeFootball", 2026, 13,
+                        "Published", DateTimeOffset.UtcNow.AddHours(1), null, []);
+                    return JsonApiResponse(slate);
+                }
+
+                writes++;
+                if (nextWriteStatus != HttpStatusCode.OK)
+                    return new PlayerApiForwardResponse((int)nextWriteStatus, "application/problem+json",
+                        Encoding.UTF8.GetBytes("{\"title\":\"Conflict\",\"status\":409}"));
+                var status = request.RequestUri?.OriginalString.EndsWith("/submit", StringComparison.Ordinal) == true
+                    ? "Submitted"
+                    : "Draft";
+                return JsonApiResponse(new PickSheetDto(Guid.NewGuid(), qaSlate, status, null, writes, []));
+            }
+        };
+        using var factory = CreateBffFactory(services =>
+        {
+            services.RemoveAll<IPlayerApiClient>();
+            services.AddSingleton<IPlayerApiClient>(api);
+        }, faultOperation: "save-draft", faultApproval: "yes");
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+        AddTestPlayer(client, qaPlayer);
+        var (token, cookie) = await AcquireAntiforgeryAsync(client);
+        AddCookie(client, cookie);
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", token);
+        client.DefaultRequestHeaders.Add("Origin", "https://localhost");
+        var fault = factory.Services.GetRequiredService<DevelopmentAmbiguousWriteFault>();
+
+        using (var failed = await SendPlayerMutationAsync(client, HttpMethod.Put, $"/bff/api/v1/slates/{qaSlate:D}/picks"))
+            Assert.Equal(HttpStatusCode.Conflict, failed.StatusCode);
+        Assert.True(fault.IsArmed); // The API did not confirm success.
+
+        preflightLeague = Guid.NewGuid();
+        nextWriteStatus = HttpStatusCode.OK;
+        using (var wrongLeague = await SendPlayerMutationAsync(client, HttpMethod.Put, $"/bff/api/v1/slates/{qaSlate:D}/picks"))
+            Assert.Equal(HttpStatusCode.OK, wrongLeague.StatusCode); // Ordinary API response is passed through.
+        Assert.True(fault.IsArmed);
+
+        preflightLeague = qaLeague;
+        using (var injected = await SendPlayerMutationAsync(client, HttpMethod.Put, $"/bff/api/v1/slates/{qaSlate:D}/picks"))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, injected.StatusCode);
+            Assert.Equal("no-store", injected.Headers.CacheControl?.ToString());
+        }
+        Assert.False(fault.IsArmed);
+
+        using var subsequent = await SendPlayerMutationAsync(client, HttpMethod.Put, $"/bff/api/v1/slates/{qaSlate:D}/picks");
+        Assert.Equal(HttpStatusCode.OK, subsequent.StatusCode);
+        Assert.Equal(4, writes);
+    }
+
+    [Fact]
+    public async Task DevelopmentAmbiguousWriteFaultDoesNotActivateForWrongPlayerSlateOrOperation()
+    {
+        var qaSlate = DevelopmentAmbiguousWriteFault.QaSlateId;
+        var api = new StubPlayerApiClient
+        {
+            ResponseFactory = request => request.Method == HttpMethod.Get
+                ? JsonApiResponse(new SlateDto(qaSlate, DevelopmentAmbiguousWriteFault.QaLeagueId,
+                    "CollegeFootball", 2026, 13, "Published", DateTimeOffset.UtcNow.AddHours(1), null, []))
+                : JsonApiResponse(new PickSheetDto(Guid.NewGuid(), qaSlate, "Draft", null, 1, []))
+        };
+        using var factory = CreateBffFactory(services =>
+        {
+            services.RemoveAll<IPlayerApiClient>();
+            services.AddSingleton<IPlayerApiClient>(api);
+        }, faultOperation: "save-draft", faultApproval: "yes");
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+        AddTestPlayer(client, Guid.NewGuid());
+        var (token, cookie) = await AcquireAntiforgeryAsync(client);
+        AddCookie(client, cookie);
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", token);
+        client.DefaultRequestHeaders.Add("Origin", "https://localhost");
+        using var response = await SendPlayerMutationAsync(client, HttpMethod.Put, $"/bff/api/v1/slates/{qaSlate:D}/picks");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(factory.Services.GetRequiredService<DevelopmentAmbiguousWriteFault>().IsArmed);
+        Assert.Equal(1, api.ForwardRequestCount); // Wrong player skips the membership preflight and fault path.
+    }
+
+    [Fact]
+    public async Task DevelopmentSubmitFaultReturns503OnlyAfterConfirmedSubmittedResponse()
+    {
+        var playerId = Guid.NewGuid();
+        var leagueId = Guid.NewGuid();
+        var slateId = Guid.NewGuid();
+        var commitSubmission = false;
+        var posts = 0;
+        var api = new StubPlayerApiClient
+        {
+            ResponseFactory = request =>
+            {
+                if (request.Method == HttpMethod.Get)
+                    return JsonApiResponse(new SlateDto(slateId, leagueId, "CollegeFootball", 2026, 14,
+                        "Published", DateTimeOffset.UtcNow.AddDays(2), null, []));
+
+                posts++;
+                return commitSubmission
+                    ? JsonApiResponse(new PickSheetDto(Guid.NewGuid(), slateId, "Submitted",
+                        DateTimeOffset.UtcNow, posts, []))
+                    : new PlayerApiForwardResponse((int)HttpStatusCode.Conflict, "application/problem+json",
+                        Encoding.UTF8.GetBytes("{\"title\":\"Conflict\",\"status\":409}"));
+            }
+        };
+        using var factory = CreateBffFactory(services =>
+        {
+            services.RemoveAll<IPlayerApiClient>();
+            services.AddSingleton<IPlayerApiClient>(api);
+        }, faultOperation: "submit-picks", faultApproval: "yes", faultPlayerId: playerId.ToString("D"),
+            faultLeagueId: leagueId.ToString("D"), faultSlateId: slateId.ToString("D"));
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+        AddTestPlayer(client, playerId);
+        var (token, cookie) = await AcquireAntiforgeryAsync(client);
+        AddCookie(client, cookie);
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", token);
+        client.DefaultRequestHeaders.Add("Origin", "https://localhost");
+        var fault = factory.Services.GetRequiredService<DevelopmentAmbiguousWriteFault>();
+
+        using (var failed = await SendPlayerMutationAsync(client, HttpMethod.Post, $"/bff/api/v1/slates/{slateId:D}/submit"))
+            Assert.Equal(HttpStatusCode.Conflict, failed.StatusCode);
+        Assert.True(fault.IsArmed); // No committed Submitted response, so the fault remains available.
+
+        commitSubmission = true;
+        using var obscured = await SendPlayerMutationAsync(client, HttpMethod.Post,
+            $"/bff/api/v1/slates/{slateId:D}/submit");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, obscured.StatusCode);
+        Assert.Equal("no-store", obscured.Headers.CacheControl?.ToString());
+        Assert.False(fault.IsArmed);
+        Assert.Equal(2, posts);
+    }
+
+    private static PlayerApiForwardResponse JsonApiResponse<T>(T value) =>
+        new((int)HttpStatusCode.OK, "application/json", JsonSerializer.SerializeToUtf8Bytes(value));
+
+    private static Task<HttpResponseMessage> SendPlayerMutationAsync(HttpClient client, HttpMethod method, string path) =>
+        client.SendAsync(new HttpRequestMessage(method, path)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json")
+        });
+
+    [Fact]
     public async Task BffHasNoArbitraryApiProxyRoute()
     {
         var fakeApi = new StubPlayerApiClient();
@@ -616,7 +784,9 @@ public sealed class PlayerAuthenticationBoundaryTests
             if (configureServices is not null) builder.ConfigureTestServices(configureServices);
         });
 
-    private static WebApplicationFactory<Program> CreateBffFactory(Action<IServiceCollection>? configureServices = null) =>
+    private static WebApplicationFactory<Program> CreateBffFactory(Action<IServiceCollection>? configureServices = null,
+        string? faultOperation = null, string? faultApproval = null, string environment = "Development",
+        string? faultPlayerId = null, string? faultLeagueId = null, string? faultSlateId = null) =>
         CreateFactory(services =>
         {
             services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, PlayerBoundaryTestHandler>(
@@ -628,6 +798,14 @@ public sealed class PlayerAuthenticationBoundaryTests
                 options.DefaultForbidScheme = "PlayerBoundaryTest";
             });
             configureServices?.Invoke(services);
+        }).WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(environment);
+            if (faultOperation is not null) builder.UseSetting("SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE", faultOperation);
+            if (faultApproval is not null) builder.UseSetting("SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_APPROVED", faultApproval);
+            if (faultPlayerId is not null) builder.UseSetting("SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_PLAYER_ID", faultPlayerId);
+            if (faultLeagueId is not null) builder.UseSetting("SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_LEAGUE_ID", faultLeagueId);
+            if (faultSlateId is not null) builder.UseSetting("SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_SLATE_ID", faultSlateId);
         });
 
     private static void AddTestPlayer(HttpClient client, Guid? userId = null, string role = ScoutRoles.Player)
@@ -710,6 +888,7 @@ public sealed class PlayerAuthenticationBoundaryTests
         public int ForwardRequestCount { get; private set; }
         public string? LastRequestPath { get; private set; }
         public Exception? ForwardException { get; init; }
+        public Func<HttpRequestMessage, PlayerApiForwardResponse>? ResponseFactory { get; set; }
         public PlayerApiForwardResponse Response { get; set; } = new((int)HttpStatusCode.OK,
             "application/json", Encoding.UTF8.GetBytes("{}"));
 
@@ -724,7 +903,7 @@ public sealed class PlayerAuthenticationBoundaryTests
             ForwardRequestCount++;
             LastRequestPath = request.RequestUri?.OriginalString;
             if (ForwardException is not null) throw ForwardException;
-            return Task.FromResult(Response);
+            return Task.FromResult(ResponseFactory?.Invoke(request) ?? Response);
         }
     }
 

@@ -9,6 +9,14 @@ using SaturdayScout.Player.Components;
 var builder = WebApplication.CreateBuilder(args);
 
 ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment);
+var ambiguousWriteFault = DevelopmentAmbiguousWriteFault.FromConfiguration(
+    builder.Environment.IsDevelopment(),
+    builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"],
+    builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_APPROVED"],
+    builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_PLAYER_ID"],
+    builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_LEAGUE_ID"],
+    builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE_SLATE_ID"]);
+builder.Services.AddSingleton(ambiguousWriteFault);
 var playerCookie = builder.Configuration.GetSection(PlayerCookieOptions.SectionName).Get<PlayerCookieOptions>() ?? new();
 if (!playerCookie.Name.StartsWith("__Host-", StringComparison.Ordinal) ||
     playerCookie.IdleTimeoutMinutes is < 1 or > 1440 || playerCookie.AbsoluteTimeoutHours is < 1 or > 168)
@@ -87,6 +95,9 @@ builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 var app = builder.Build();
+if (ambiguousWriteFault.IsArmed)
+    app.Logger.LogWarning("Development ambiguous-write simulation armed for one {Operation} request. Configured QA player, league, and slate restrictions are active.",
+        builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"]);
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
