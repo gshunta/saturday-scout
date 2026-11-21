@@ -2,6 +2,7 @@
 @attribute [Authorize(Policy = "SystemAdministrator")]
 @rendermode InteractiveServer
 @inject AdminPortalService Admin
+@inject IJSRuntime JS
 
 <PageTitle>Weekly Slate</PageTitle>
 <div class="page-heading"><div><p class="eyebrow">Slate review</p><h1>Weekly slate</h1></div>
@@ -16,7 +17,11 @@ else if (slate is not null)
             <div><dt>Week</dt><dd>@slate.Week</dd></div><div><dt>Status</dt><dd>@slate.Status</dd></div>
             <div><dt>Games</dt><dd>@slate.Games.Count / 10</dd></div>
             <div><dt>Readiness</dt><dd>@SlateReadinessPresentation.Label(slate.Status, slate.ReadyForPublishing)</dd></div>
-            @if (slate.LockUtc is not null) { <div><dt>Lock (UTC)</dt><dd>@Kickoff(slate.LockUtc)</dd></div> }
+            @if (slate.LockUtc is not null)
+            {
+                <div><dt>Lock time (@(timeZoneId ?? "local timezone unavailable"))</dt>
+                    <dd>@(timeZoneId is null ? "Browser timezone unavailable" : LocalLockTimeConverter.FormatLocal(slate.LockUtc.Value, timeZoneId))</dd></div>
+            }
             @if (slate.PublishedUtc is not null) { <div><dt>Published (UTC)</dt><dd>@Kickoff(slate.PublishedUtc)</dd></div> }
         </dl>
     </section>
@@ -29,9 +34,32 @@ else if (slate is not null)
             { <p class="empty-state">Select exactly 10 eligible games before publishing.</p> }
             else
             {
-                <label>Lock time (UTC) <input type="datetime-local" value="@lockUtcInput" @onchange="LockTimeChanged" /></label>
-                <p class="muted">The lock must be in the future and no later than the earliest selected kickoff.</p>
-                <button class="button" disabled="@publishing" @onclick="Publish">@(publishing ? "Publishing…" : "Publish slate")</button>
+                @if (timeZoneId is null)
+                {
+                    <p class="muted" role="status">@(inputValidationMessage ?? "Detecting your browser timezone…")</p>
+                }
+                else
+                {
+                    <label>Lock time (local · @timeZoneId)
+                        <input type="datetime-local" step="any" value="@lockLocalInput" @onchange="LockTimeChanged" disabled="@publishing" />
+                    </label>
+                    <p class="muted">Times use @timeZoneId. The server stores and enforces the converted UTC instant. The lock must be in the future and no later than the earliest selected kickoff.</p>
+                    @if (inputValidationMessage is not null) { <p class="notice error" role="alert">@inputValidationMessage</p> }
+                    @if (ambiguousTimeNotice is not null) { <p class="notice" role="status">@ambiguousTimeNotice</p> }
+                    @if (ambiguousOccurrences.Count == 2)
+                    {
+                        <fieldset>
+                            <legend>This local time occurs twice. Select the intended occurrence:</legend>
+                            <label><input type="radio" name="ambiguous-lock-occurrence" value="earlier"
+                                checked="@(ambiguousChoice == AmbiguousTimeOccurrence.Earlier)" @onchange="SelectEarlierOccurrence" />
+                                First occurrence — @LocalLockTimeConverter.FormatLocal(ambiguousOccurrences[0], timeZoneId)</label>
+                            <label><input type="radio" name="ambiguous-lock-occurrence" value="later"
+                                checked="@(ambiguousChoice == AmbiguousTimeOccurrence.Later)" @onchange="SelectLaterOccurrence" />
+                                Second occurrence — @LocalLockTimeConverter.FormatLocal(ambiguousOccurrences[1], timeZoneId)</label>
+                        </fieldset>
+                    }
+                }
+                <button class="button" disabled="@(publishing || timeZoneId is null || inputValidationMessage is not null)" @onclick="Publish">@(publishing ? "Publishing…" : "Publish slate")</button>
             }
         </section>
     }
@@ -52,39 +80,131 @@ else if (slate is not null)
     private bool publishing;
     private string? error;
     private string? publishMessage;
-    private string lockUtcInput = "";
+    private string? timeZoneId;
+    private string lockLocalInput = "";
+    private string? inputValidationMessage;
+    private string? ambiguousTimeNotice;
+    private IReadOnlyList<DateTimeOffset> ambiguousOccurrences = [];
+    private AmbiguousTimeOccurrence? ambiguousChoice;
+    private Guid? loadedSlateId;
     protected override async Task OnParametersSetAsync()
     {
         loading = true; error = null;
         try
         {
             slate = await Admin.GetSlateAsync(SlateId);
-            if (slate.ReadyForPublishing && string.IsNullOrWhiteSpace(lockUtcInput))
+            if (loadedSlateId != slate.Id)
             {
-                var earliest = slate.Games.Min(x => x.KickoffUtc);
-                lockUtcInput = earliest?.ToUniversalTime().AddMinutes(-1).ToString("yyyy-MM-ddTHH:mm") ?? "";
+                loadedSlateId = slate.Id;
+                lockLocalInput = "";
+                inputValidationMessage = null;
+                ambiguousTimeNotice = null;
+                ambiguousOccurrences = [];
+                ambiguousChoice = null;
+                InitializeDefaultLockInput();
             }
         }
         catch (Exception) { error = "This slate could not be loaded."; }
         finally { loading = false; }
     }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            timeZoneId = await JS.InvokeAsync<string>("saturdayScoutAdminTime.getTimeZone");
+            if (string.IsNullOrWhiteSpace(timeZoneId)) timeZoneId = null;
+            InitializeDefaultLockInput();
+        }
+        catch (Exception exception) when (exception is JSException or InvalidOperationException)
+        {
+            timeZoneId = null;
+            inputValidationMessage = "Your browser timezone could not be detected. Reload the page and try again.";
+        }
+        StateHasChanged();
+    }
+    private void InitializeDefaultLockInput()
+    {
+        if (timeZoneId is null || slate is null || !string.IsNullOrEmpty(lockLocalInput)) return;
+        if (slate.LockUtc is { } existingLockUtc)
+        {
+            lockLocalInput = LocalLockTimeConverter.ToLocalInput(existingLockUtc, timeZoneId);
+            ambiguousOccurrences = LocalLockTimeConverter.GetAmbiguousUtcOccurrences(lockLocalInput, timeZoneId);
+            if (ambiguousOccurrences.Count == 2)
+            {
+                var existingUtc = existingLockUtc.ToUniversalTime();
+                ambiguousChoice = existingUtc == ambiguousOccurrences[0]
+                    ? AmbiguousTimeOccurrence.Earlier
+                    : AmbiguousTimeOccurrence.Later;
+            }
+            return;
+        }
+        if (!slate.ReadyForPublishing) return;
+        var earliest = slate.Games.Min(x => x.KickoffUtc);
+        if (earliest is not null)
+        {
+            try
+            {
+                lockLocalInput = LocalLockTimeConverter.CreateDefaultLocalInput(earliest.Value, timeZoneId);
+                ambiguousOccurrences = LocalLockTimeConverter.GetAmbiguousUtcOccurrences(lockLocalInput, timeZoneId);
+                if (ambiguousOccurrences.Count == 2)
+                    inputValidationMessage = "This default time occurs twice. Choose the intended occurrence before publishing.";
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidTimeZoneException or TimeZoneNotFoundException or InvalidOperationException)
+            {
+                inputValidationMessage = "A safe default could not be calculated for your browser timezone. Enter a different local time or reload.";
+            }
+        }
+    }
     private async Task Publish()
     {
         if (slate is null || slate.Status != "Draft" || !slate.ReadyForPublishing) return;
-        if (!DateTime.TryParseExact(lockUtcInput, "yyyy-MM-ddTHH:mm",
-            System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed))
-        { publishMessage = "Enter a valid lock time in UTC."; return; }
-        var lockUtc = new DateTimeOffset(DateTime.SpecifyKind(parsed, DateTimeKind.Utc));
+        if (timeZoneId is null) { inputValidationMessage = "Your browser timezone is unavailable."; return; }
+        LocalLockTimeConversion conversion;
+        try { conversion = LocalLockTimeConverter.ConvertToUtc(lockLocalInput, timeZoneId, ambiguousChoice); }
+        catch (ArgumentException exception) { inputValidationMessage = exception.Message; return; }
+        var lockUtc = conversion.LockUtc;
         publishing = true; publishMessage = null;
         try
         {
             slate = await Admin.PublishSlateAsync(SlateId, new PublishAdminSlateRequest(lockUtc, slate.Version));
-            publishMessage = "Slate published. It is now read-only.";
+            publishMessage = conversion.IsAmbiguous
+                ? $"Slate published using the {(ambiguousChoice == AmbiguousTimeOccurrence.Earlier ? "first" : "second")} occurrence of the ambiguous local time. It is now read-only."
+                : "Slate published. It is now read-only.";
         }
         catch (Exception) { publishMessage = "The slate was not published. Check the lock time and reload if it changed elsewhere."; }
         finally { publishing = false; }
     }
-    private void LockTimeChanged(ChangeEventArgs args) => lockUtcInput = args.Value?.ToString() ?? "";
+    private void LockTimeChanged(ChangeEventArgs args)
+    {
+        var rawValue = args.Value?.ToString() ?? "";
+        lockLocalInput = rawValue.Trim();
+        inputValidationMessage = null;
+        ambiguousTimeNotice = null;
+        ambiguousOccurrences = [];
+        ambiguousChoice = null;
+        try
+        {
+            ambiguousOccurrences = LocalLockTimeConverter.GetAmbiguousUtcOccurrences(lockLocalInput, timeZoneId);
+            if (ambiguousOccurrences.Count == 2)
+                inputValidationMessage = "This local time occurs twice. Choose the intended occurrence before publishing.";
+            else
+                _ = LocalLockTimeConverter.ConvertToUtc(lockLocalInput, timeZoneId);
+        }
+        catch (ArgumentException exception) { inputValidationMessage = exception.Message; }
+    }
+    private void SelectEarlierOccurrence()
+    {
+        ambiguousChoice = AmbiguousTimeOccurrence.Earlier;
+        inputValidationMessage = null;
+        ambiguousTimeNotice = "The first occurrence is selected; the displayed UTC offset identifies the chosen instant.";
+    }
+    private void SelectLaterOccurrence()
+    {
+        ambiguousChoice = AmbiguousTimeOccurrence.Later;
+        inputValidationMessage = null;
+        ambiguousTimeNotice = "The second occurrence is selected; the displayed UTC offset identifies the chosen instant.";
+    }
     private static string Kickoff(DateTimeOffset? value) => value?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") ?? "Time TBD";
     private static string Score(AdminGameDto game) => game.HomeScore is null || game.AwayScore is null ? "—" : $"{game.AwayScore}–{game.HomeScore}";
 }
