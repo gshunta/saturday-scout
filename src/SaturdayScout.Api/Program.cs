@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using SaturdayScout.Api;
 using SaturdayScout.Application;
 using SaturdayScout.Infrastructure;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 
@@ -20,6 +21,7 @@ builder.Services.AddOpenApi("v1", options => options.AddDocumentTransformer((doc
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 builder.Services.AddPlayerAssertionAuthentication(builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddScoped<IAuthorizationHandler, LeagueCommissionerAuthorizationHandler>();
@@ -56,6 +58,7 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
+app.UseTrustedReverseProxyForwarding();
 app.UseExceptionHandler();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 else app.UseHsts();

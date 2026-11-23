@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.FileProviders;
 using SaturdayScout.Infrastructure;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Player;
 using SaturdayScout.Player.Components;
@@ -9,6 +10,7 @@ using SaturdayScout.Player.Components;
 var builder = WebApplication.CreateBuilder(args);
 
 ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment);
+builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 var ambiguousWriteFault = DevelopmentAmbiguousWriteFault.FromConfiguration(
     builder.Environment.IsDevelopment(),
     builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"],
@@ -95,6 +97,7 @@ builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 var app = builder.Build();
+app.UseTrustedReverseProxyForwarding();
 if (ambiguousWriteFault.IsArmed)
     app.Logger.LogWarning("Development ambiguous-write simulation armed for one {Operation} request. Configured QA player, league, and slate restrictions are active.",
         builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"]);

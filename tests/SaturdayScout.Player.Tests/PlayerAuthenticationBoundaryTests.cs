@@ -45,6 +45,28 @@ public sealed class PlayerAuthenticationBoundaryTests
     }
 
     [Fact]
+    public async Task TrustedReverseProxyHttpsSchemePreventsRedirectBeforePlayerAuthEndpoint()
+    {
+        using var factory = CreateFactory().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("TrustedReverseProxy:Enabled", "true");
+            builder.UseSetting("TrustedReverseProxy:KnownProxies:0", IPAddress.Loopback.ToString());
+            builder.UseSetting("https_port", "443");
+        });
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://localhost"),
+            AllowAutoRedirect = false
+        });
+        client.DefaultRequestHeaders.Add("X-Forwarded-Proto", "https");
+
+        using var response = await client.GetAsync("/auth/session");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Null(response.Headers.Location);
+    }
+
+    [Fact]
     public async Task ReactRootAndClientRoutesServeTheEntryPointWithoutRedirecting()
     {
         using var factory = CreateFactory();

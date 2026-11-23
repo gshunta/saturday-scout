@@ -5,6 +5,7 @@ using SaturdayScout.Admin;
 using SaturdayScout.Admin.Components;
 using SaturdayScout.Application;
 using SaturdayScout.Infrastructure;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -16,6 +17,7 @@ var developmentPlayerRequested = args.Length > 0 && args[0] == "provision-dev-pl
 var developmentQaLeagueRequested = args.Length > 0 && args[0] == "provision-dev-qa-league";
 var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested || developmentQaLeagueRequested ? [] : args);
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAdminScoutService, AdminScoutStore>();
 builder.Services.AddScoped<IScoutStore, ScoutStore>();
 builder.Services.AddScoped<IScoutService, ScoutService>();
@@ -142,6 +144,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+app.UseTrustedReverseProxyForwarding();
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);

@@ -2,6 +2,22 @@
 
 **Status: documentation only — no production resources have been provisioned yet.** This covers hosting `SaturdayScout.Api` and `SaturdayScout.Admin` on a single Basic `B1` Linux App Service Plan, the compute half of the ~$29/month total documented in [`database.md`](database.md#tier-and-cost). Provision the database first (`database.md`); the steps here need its server name to build a connection string, and the database's firewall rules need this App Service's outbound IPs.
 
+## Trusted reverse proxy settings
+
+Player, API, and Admin use the shared `TrustedReverseProxy` configuration section. Forwarded headers are disabled by default, which supports direct HTTPS hosting and local Development without a proxy. Enable processing only after the hosting topology and trusted peer addresses/networks have been established:
+
+```text
+TrustedReverseProxy__Enabled=true
+TrustedReverseProxy__ForwardLimit=1
+TrustedReverseProxy__KnownProxies__0=<explicit-proxy-ip>
+# Or configure explicitly trusted CIDR entries:
+TrustedReverseProxy__KnownNetworks__0=<explicit-proxy-cidr>
+```
+
+Set these settings consistently on each hosted app that receives traffic through that proxy. `ForwardLimit` is bounded to 1–5 and defaults to one hop. Enabling forwarding without at least one valid proxy or network fails application startup. Invalid IP/CIDR values also fail startup. Do not use wildcard trust or enable forwarding before confirming the actual platform path. Direct HTTPS hosting should leave `TrustedReverseProxy__Enabled` unset or set it to `false`.
+
+Before enabling this in Azure App Service, discover and validate the **inbound** proxy peer address/network and forwarded-header chain from a staging deployment. Confirm how many trusted hops append `X-Forwarded-For` and `X-Forwarded-Proto`, and test the chosen limit with requests through that path. App Service outbound IPs used for PostgreSQL firewall rules do not establish the inbound proxy trust list.
+
 Reuse the same resource group and location as the database:
 
 ```bash

@@ -13,6 +13,39 @@ namespace SaturdayScout.Api.IntegrationTests;
 public sealed class PlayerAssertionPrevalidationTests
 {
     [Fact]
+    public async Task TrustedReverseProxyHttpsSchemePreventsApiRedirectLoop()
+    {
+        var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-api-proxy-test-{Guid.NewGuid():N}");
+        try
+        {
+            using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Development");
+                builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+                builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
+                builder.UseSetting("TrustedReverseProxy:Enabled", "true");
+                builder.UseSetting("TrustedReverseProxy:KnownProxies:0", IPAddress.Loopback.ToString());
+                builder.UseSetting("https_port", "443");
+            });
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("http://localhost"),
+                AllowAutoRedirect = false
+            });
+            client.DefaultRequestHeaders.Add("X-Forwarded-Proto", "https");
+
+            using var response = await client.GetAsync("/api/v1/games?sport=nfl&season=2026&week=8");
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Null(response.Headers.Location);
+        }
+        finally
+        {
+            if (Directory.Exists(keyPath)) Directory.Delete(keyPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ProductionRequiresRotatableRsaKeyRingWhileDevelopmentCanRetainItsExistingAuthOnly()
     {
         var options = new PlayerAssertionApiOptions();
