@@ -16,7 +16,7 @@ public static class PlayerAuthEndpoints
             context.Response.Headers.CacheControl = "no-store";
             return Results.Ok(new { token = antiforgery.GetAndStoreTokens(context).RequestToken });
         });
-        app.MapPost("/auth/login", Login);
+        app.MapPost("/auth/login", Login).RequireRateLimiting(PlayerAuthRateLimiting.LoginPolicy);
         app.MapPost("/auth/logout", Logout).RequireAuthorization("Player");
         app.MapGet("/auth/session", (HttpContext context, ClaimsPrincipal user) =>
         {

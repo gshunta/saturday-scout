@@ -95,6 +95,7 @@ builder.Services.AddAuthorization(options => options.AddPolicy("Player",
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<AuthenticationStateProvider, PlayerRevalidatingAuthenticationStateProvider>();
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
+builder.Services.AddPlayerAuthRateLimiting(builder.Configuration);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 var app = builder.Build();
@@ -132,6 +133,11 @@ if (File.Exists(reactEntryPoint))
         }
     });
 }
+// Endpoint routing is implicit at the start of the WebApplication pipeline, so endpoint
+// rate-limit metadata is available here. This runs after trusted forwarded-header
+// processing (client IP) and before authentication, so a rejected sign-in attempt never
+// reaches cookie authentication, antiforgery validation, or the login handler.
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();

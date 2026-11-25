@@ -24,6 +24,27 @@ Set these settings consistently on each hosted app that receives traffic through
 
 Before enabling this in Azure App Service, discover and validate the **inbound** proxy peer address/network and forwarded-header chain from a staging deployment. Confirm how many trusted hops append `X-Forwarded-For` and `X-Forwarded-Proto`, and test the chosen limit with requests through that path. App Service outbound IPs used for PostgreSQL firewall rules do not establish the inbound proxy trust list.
 
+## Player sign-in rate limiting
+
+`SaturdayScout.Player` rate-limits `POST /auth/login`, its only anonymous credential-handling endpoint; Player has no invitation-acceptance, registration, password-reset, or MFA endpoints today, and any added later must apply the same `player-login` policy (a test fails if an anonymous `/auth/*` POST lacks it). The limit uses ASP.NET Core's built-in rate limiter:
+
+| Setting | Default | Allowed range |
+|---|---|---|
+| `PlayerRateLimiting__Login__PermitLimit` | `10` attempts | 1–100 |
+| `PlayerRateLimiting__Login__WindowSeconds` | `300` (5 minutes) | 1–3600 |
+
+The algorithm is a sliding window with five segments and no request queue, so a burst cannot double the limit at a window boundary and excess attempts are rejected immediately. Every submission counts, successful or not, so the limiter gives no signal about whether an account exists. Values outside the allowed range fail startup. There is no setting to disable the limiter.
+
+Limits are partitioned by `HttpContext.Connection.RemoteIpAddress`: the full address for IPv4 (IPv4-mapped IPv6 addresses are normalized to IPv4), and the `/64` prefix for IPv6, which stops a single subscriber from rotating addresses within their own allocation. The limiter never reads `X-Forwarded-For` itself. When the `TrustedReverseProxy` settings above are enabled and correct, `RemoteIpAddress` is the real client address. If they are missing or wrong behind App Service, every client shares the front end's address and one partition; that is safe (it fails closed) but lets anyone delay sign-in for all players. Validate proxy trust before beta. The limiter runs after forwarded-header processing and before authentication, antiforgery validation, and the login handler, so a rejected request never touches Identity.
+
+A rejected request returns HTTP 429 with `Cache-Control: no-store` and the plain-text body `Too many sign-in attempts. Wait a few minutes and try again.` There is no `Retry-After` header, because the sliding-window limiter does not report one. The React app already shows its generic sign-in error for any non-success response. The Blazor `/login` form posts natively, so a throttled user sees that plain-text page and uses the browser's back button.
+
+**Interaction with Identity lockout.** Identity lockout is unchanged: five failed passwords lock that account for 15 minutes, independent of IP. The IP limit (10 per 5 minutes by default) is deliberately higher than the lockout threshold. One person mistyping a password hits account lockout first, while password spraying across many accounts from one origin hits the IP limit. Attempts rejected with 429 do not count toward lockout. Ten attempts per five minutes leaves headroom for several beta players signing in from one shared household or office address.
+
+**Not throttled:** `/health/live`, `/health/ready`, `/auth/antiforgery`, `/auth/session`, `/auth/logout` (authenticated and antiforgery-protected; throttling it could stop a player on a shared address from signing out), `/bff/*`, pages, and static or React assets.
+
+**Scaling limitation.** Counters are in memory and per process. Player tracks at most 1,024 active client-address mappings; mappings unused for the configured sliding window plus one minute are reclaimed. If all mappings are active, additional addresses are distributed over 256 bounded overflow buckets, rather than one global bucket that an attacker could exhaust for every new client. Clients that collide in an overflow bucket share its limit, so sustained address churn can still cause temporary collisions. ASP.NET Core also removes idle partition limiter instances after their limiter state has replenished and remained idle; this bounds timer and limiter retention independently of the address map. With more than one App Service instance, or after a restart, each instance keeps its own counters, so the effective limit is `PermitLimit × instance count` and counters reset on restart. That is acceptable for a single-instance beta. Scaling out would need a shared store, which is out of scope here. Rejections are recorded in the built-in `aspnetcore.rate_limiting.requests` metric; the application writes no rate-limit log entries, so no client addresses or credentials are logged.
+
 Reuse the same resource group and location as the database:
 
 ```bash
