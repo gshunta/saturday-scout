@@ -22,6 +22,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
+builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 builder.Services.AddPlayerAssertionAuthentication(builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddScoped<IAuthorizationHandler, LeagueCommissionerAuthorizationHandler>();
@@ -80,6 +81,7 @@ app.Use(async (context, next) =>
 });
 app.UseAntiforgery();
 app.UseAuthorization();
+app.MapScoutHealthEndpoints();
 
 var authApi = app.MapGroup("/api/v1/auth").RequireAuthorization();
 authApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) =>

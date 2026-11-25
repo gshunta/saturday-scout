@@ -18,6 +18,7 @@ var developmentQaLeagueRequested = args.Length > 0 && args[0] == "provision-dev-
 var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested || developmentQaLeagueRequested ? [] : args);
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
+builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 builder.Services.AddScoped<IAdminScoutService, AdminScoutStore>();
 builder.Services.AddScoped<IScoutStore, ScoutStore>();
 builder.Services.AddScoped<IScoutService, ScoutService>();
@@ -169,6 +170,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
+app.MapScoutHealthEndpoints();
 app.MapAdminAuthEndpoints();
 app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();

@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
+builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 var ambiguousWriteFault = DevelopmentAmbiguousWriteFault.FromConfiguration(
     builder.Environment.IsDevelopment(),
     builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"],
@@ -134,6 +135,7 @@ if (File.Exists(reactEntryPoint))
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
+app.MapScoutHealthEndpoints();
 app.MapPlayerAuthEndpoints();
 app.MapPlayerBffEndpoints();
 app.MapStaticAssets();

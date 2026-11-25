@@ -2,6 +2,12 @@
 
 **Status: documentation only — no production resources have been provisioned yet.** This covers hosting `SaturdayScout.Api` and `SaturdayScout.Admin` on a single Basic `B1` Linux App Service Plan, the compute half of the ~$29/month total documented in [`database.md`](database.md#tier-and-cost). Provision the database first (`database.md`); the steps here need its server name to build a connection string, and the database's firewall rules need this App Service's outbound IPs.
 
+## Health and readiness endpoints
+
+Player, API, and Admin expose anonymous `GET` and `HEAD` health routes. `GET /health/live` returns only `Healthy` while the process can serve HTTP; it does not contact PostgreSQL. `GET /health/ready` returns `Healthy` with HTTP 200 when the configured PostgreSQL database accepts a lightweight connectivity check, or `Unavailable` with HTTP 503 when it cannot. Both use `Cache-Control: no-store, no-cache`; responses contain no dependency details. Readiness uses the existing EF Core/Npgsql registration and connection pool, does not run migrations, and does not modify application data. The default database timeout is three seconds; `Health__DatabaseTimeoutSeconds` can set it from 1 through 10 seconds.
+
+Configure the App Service Health Check path as `/health/ready` after deployment. Validate it over the deployed HTTPS hostname and confirm healthy status returns 200 and an intentionally unavailable database returns 503 without a redirect or diagnostic response body. Keep liveness separate from readiness: a PostgreSQL outage must not make a running process appear dead, which could provoke unnecessary restarts and would obscure whether the application itself is responsive. During a transient PostgreSQL outage, readiness will return 503 until connectivity recovers; App Service health-check thresholds and polling frequency should tolerate brief outages and should be selected deliberately during platform configuration. Read-only GET requests can be retried by clients where appropriate, but application writes must retain their existing no-automatic-replay behavior.
+
 ## Trusted reverse proxy settings
 
 Player, API, and Admin use the shared `TrustedReverseProxy` configuration section. Forwarded headers are disabled by default, which supports direct HTTPS hosting and local Development without a proxy. Enable processing only after the hosting topology and trusted peer addresses/networks have been established:
