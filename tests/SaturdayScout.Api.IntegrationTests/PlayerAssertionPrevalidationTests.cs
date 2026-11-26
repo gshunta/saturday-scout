@@ -2,8 +2,13 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using SaturdayScout.Infrastructure.Identity;
 using Xunit;
@@ -12,6 +17,28 @@ namespace SaturdayScout.Api.IntegrationTests;
 
 public sealed class PlayerAssertionPrevalidationTests
 {
+    [Fact]
+    public void ApiHostUsesTheSharedAdminApiDataProtectionApplicationName()
+    {
+        var keyPath = Path.Combine(Path.GetTempPath(), $"scout-api-dp-{Guid.NewGuid():N}");
+        try
+        {
+            using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Development");
+                builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+                builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
+            });
+
+            Assert.Equal(ScoutIdentityServices.DataProtectionApplicationName,
+                factory.Services.GetRequiredService<IOptions<DataProtectionOptions>>().Value.ApplicationDiscriminator);
+        }
+        finally
+        {
+            if (Directory.Exists(keyPath)) Directory.Delete(keyPath, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task TrustedReverseProxyHttpsSchemePreventsApiRedirectLoop()
     {
@@ -78,7 +105,7 @@ public sealed class PlayerAssertionPrevalidationTests
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
+            ConfigureProductionDataProtection(builder, keyPath);
             builder.UseSetting("PlayerAssertions:Issuer", "SaturdayScout.Player");
             builder.UseSetting("PlayerAssertions:Audience", "SaturdayScout.Api");
             builder.UseSetting("PlayerAssertions:AuthorizedClientId", "saturday-scout-player");
@@ -124,5 +151,20 @@ public sealed class PlayerAssertionPrevalidationTests
                 new Claim(JwtRegisteredClaimNames.Iat, issuedAt.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64)
             ], issuedAt.AddSeconds(-5).UtcDateTime, now.AddSeconds(expiresInSeconds).UtcDateTime, credentials);
         return new JwtSecurityTokenHandler().WriteToken(jwt);
+    }
+
+    private static void ConfigureProductionDataProtection(IWebHostBuilder builder, string testKeyPath)
+    {
+        builder.UseSetting("SATURDAY_SCOUT_DP_PROVIDER", "AzureBlob");
+        builder.UseSetting("SATURDAY_SCOUT_DP_KEY_BLOB_URI", "https://scout-test.blob.core.windows.net/dataprotection/api.xml");
+        builder.UseSetting("SATURDAY_SCOUT_DP_KEY_VAULT_KEY_ID", "https://scout-test.vault.azure.net/keys/api-protection");
+        builder.UseSetting("SATURDAY_SCOUT_DP_APPLICATION_NAME", ScoutIdentityServices.DataProtectionApplicationName);
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddDataProtection()
+                .SetApplicationName(ScoutIdentityServices.DataProtectionApplicationName)
+                .PersistKeysToFileSystem(new DirectoryInfo(testKeyPath));
+            services.PostConfigure<KeyManagementOptions>(options => options.XmlEncryptor = null);
+        });
     }
 }

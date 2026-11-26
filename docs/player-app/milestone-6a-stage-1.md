@@ -38,7 +38,7 @@ The browser should call only the Player origin. The BFF authenticates the Player
 
 ### Data Protection persistence
 
-Player and Admin use separate cookie names and remain on separate hosts. They do not need to share a browser cookie or Data Protection key ring for the proposed topology. The current `SATURDAY_SCOUT_DP_KEYS_PATH` filesystem configuration must point to durable storage in Azure; a container-local writable directory can be lost on restart or deployment. For multiple Player replicas, all replicas must use a shared persistent key ring and stable application name. Protect persisted keys at rest (for example with an Azure Key Vault key). If a future design deliberately shares cookies across hosts, align the key ring, application name, cookie domain, and cookie security design only after a separate review.
+**Superseded by Azure Beta Milestone 1 Stage 4.** Player and Admin retain separate cookie names and authentication schemes. Player uses a dedicated Azure Blob key ring with the `SaturdayScout.Player.v1` application name. Admin and API share a separate Blob ring with the existing `SaturdayScout.SharedIdentity.v1` name so the API can validate the administrator Identity cookie. Both rings use separate Azure Key Vault wrapping keys and managed identities in Production. Local Development continues to use filesystem persistence. See [`docs/deployment.md`](../deployment.md#durable-data-protection-key-rings) for the current configuration and operations.
 
 ## Verified trust boundaries
 

@@ -2,10 +2,14 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using SaturdayScout.Application;
 using SaturdayScout.Domain;
@@ -83,9 +87,9 @@ public sealed class ApiFlowTests
         using var apiKey = System.Security.Cryptography.RSA.Create(3072);
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
-            builder.UseEnvironment("Production");
+            builder.UseEnvironment("Testing");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.Combine(Path.GetTempPath(), $"scout-api-policy-keys-{Guid.NewGuid():N}"));
             builder.UseSetting("PlayerAssertions:PublicKeys:0:KeyId", "api-policy-test-key");
             builder.UseSetting("PlayerAssertions:PublicKeys:0:PublicKeyPem", apiKey.ExportSubjectPublicKeyInfoPem());
         });
@@ -251,12 +255,13 @@ public sealed class ApiFlowTests
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+            ConfigureProductionDataProtection(builder);
             builder.UseSetting("PlayerAssertions:PublicKeys:0:KeyId", "api-policy-test-key");
             builder.UseSetting("PlayerAssertions:PublicKeys:0:PublicKeyPem", apiKey.ExportSubjectPublicKeyInfoPem());
         });
         using var client = Client(factory, "commissioner");
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/games?sport=nfl&season=2026&week=8")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await client.GetAsync("/api/v1/games?sport=nfl&season=2026&week=8")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/admin/dashboard")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/openapi/v1.json")).StatusCode);
     }
@@ -266,6 +271,22 @@ public sealed class ApiFlowTests
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Dev-Subject", subject);
         return client;
+    }
+
+    private static void ConfigureProductionDataProtection(IWebHostBuilder builder)
+    {
+        var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-api-production-test-{Guid.NewGuid():N}");
+        builder.UseSetting("SATURDAY_SCOUT_DP_PROVIDER", "AzureBlob");
+        builder.UseSetting("SATURDAY_SCOUT_DP_KEY_BLOB_URI", "https://scout-test.blob.core.windows.net/dataprotection/api.xml");
+        builder.UseSetting("SATURDAY_SCOUT_DP_KEY_VAULT_KEY_ID", "https://scout-test.vault.azure.net/keys/api-protection");
+        builder.UseSetting("SATURDAY_SCOUT_DP_APPLICATION_NAME", ScoutIdentityServices.DataProtectionApplicationName);
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddDataProtection()
+                .SetApplicationName(ScoutIdentityServices.DataProtectionApplicationName)
+                .PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+            services.PostConfigure<KeyManagementOptions>(options => options.XmlEncryptor = null);
+        });
     }
 }
 

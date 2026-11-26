@@ -20,7 +20,7 @@ builder.Services.AddOpenApi("v1", options => options.AddDocumentTransformer((doc
 }));
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
-builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment, ScoutDataProtectionRing.AdminApi);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 builder.Services.AddPlayerAssertionAuthentication(builder.Configuration, builder.Environment.IsDevelopment());

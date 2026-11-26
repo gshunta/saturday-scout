@@ -99,36 +99,50 @@ for app in saturday-scout-api saturday-scout-admin; do
     ASPNETCORE_ENVIRONMENT=Production \
     WEBSITES_ENABLE_APP_SERVICE_STORAGE=true \
     SATURDAY_SCOUT_DB_CONNECTION="$SATURDAY_SCOUT_DB_CONNECTION" \
-    SATURDAY_SCOUT_DP_KEYS_PATH=/home/dpkeys
+    SATURDAY_SCOUT_DP_PROVIDER=AzureBlob \
+    SATURDAY_SCOUT_DP_KEY_BLOB_URI="$SATURDAY_SCOUT_SHARED_DP_KEY_BLOB_URI" \
+    SATURDAY_SCOUT_DP_KEY_VAULT_KEY_ID="$SATURDAY_SCOUT_SHARED_DP_KEY_VAULT_ID" \
+    SATURDAY_SCOUT_DP_APPLICATION_NAME=SaturdayScout.SharedIdentity.v1
 done
+az webapp config appsettings set --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" \
+  --name "$SATURDAY_SCOUT_PLAYER_APP_NAME" --settings \
+  ASPNETCORE_ENVIRONMENT=Production \
+  WEBSITES_ENABLE_APP_SERVICE_STORAGE=true \
+  SATURDAY_SCOUT_DB_CONNECTION="$SATURDAY_SCOUT_DB_CONNECTION" \
+  SATURDAY_SCOUT_DP_PROVIDER=AzureBlob \
+  SATURDAY_SCOUT_DP_KEY_BLOB_URI="$SATURDAY_SCOUT_PLAYER_DP_KEY_BLOB_URI" \
+  SATURDAY_SCOUT_DP_KEY_VAULT_KEY_ID="$SATURDAY_SCOUT_PLAYER_DP_KEY_VAULT_ID" \
+  SATURDAY_SCOUT_DP_APPLICATION_NAME=SaturdayScout.Player.v1
 az webapp config appsettings set --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" --name saturday-scout-admin \
   --settings SATURDAY_SCOUT_PUBLIC_ORIGIN=https://your-chosen-domain
 ```
 
 `Ssl Mode=Require` is mandatory — Flexible Server rejects unencrypted connections. `saturday-scout-admin` additionally requires `SATURDAY_SCOUT_PUBLIC_ORIGIN` as an HTTPS origin, per the startup check in `src/SaturdayScout.Admin/Program.cs`; set it once a custom domain and managed certificate are attached to that app (`az webapp config hostname add` / `az webapp config ssl create --certificate-source Managed`), which isn't covered here.
 
-### Data Protection keys
+Set the shell variables `SATURDAY_SCOUT_SHARED_DP_KEY_BLOB_URI`, `SATURDAY_SCOUT_SHARED_DP_KEY_VAULT_ID`, `SATURDAY_SCOUT_PLAYER_APP_NAME`, `SATURDAY_SCOUT_PLAYER_DP_KEY_BLOB_URI`, and `SATURDAY_SCOUT_PLAYER_DP_KEY_VAULT_ID` to the provisioned resource values before running these commands. They are placeholders for deployment configuration, not application credentials. Do not place account keys, SAS tokens, or client secrets in these values.
 
-`SATURDAY_SCOUT_DP_KEYS_PATH` expects a filesystem directory, which is why both apps point at `/home/dpkeys` above: on App Service, `/home` is backed by an Azure Files share that's automatically provisioned per plan, persists across restarts, and is shared across every instance of every app on that plan — so both sites read and write the same key ring with no separate storage account needed for this single B1 plan. `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true` is the default for the native runtime stack above but is **not** the default if you fall back to a Linux container deployment, so it's set explicitly either way. Confirm the mapping is active after the first deploy (write a file under `/home` via the Kudu/SSH console, restart the app, and check it persisted) before relying on it for Data Protection keys — both apps must successfully validate the shared Identity cookie against the same key ring, or sign-in will silently break on whichever app didn't get a matching key.
+### Durable Data Protection key rings
 
-If either app later moves to its own plan, one shared Azure Files share replaces this default mapping:
+Production requires `SATURDAY_SCOUT_DP_PROVIDER=AzureBlob` and all three settings below. There is no filesystem or ephemeral fallback in hosted environments; the `Testing` environment is reserved for automated integration hosts with an explicit local key path. The Player app must use its dedicated ring (`SaturdayScout.Player.v1`, Player-specific Blob URI and Key Vault key); API and Admin must use the same shared ring (`SaturdayScout.SharedIdentity.v1`, identical Blob URI and Key Vault key). Keep the Player ring inaccessible to API/Admin identities and vice versa.
 
-```bash
-az storage account create --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" \
-  --name saturdayscoutdpkeys --sku Standard_LRS --kind StorageV2
-az storage share-rm create --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" \
-  --storage-account saturdayscoutdpkeys --name dpkeys --quota 1
-az storage account keys list --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" \
-  --account-name saturdayscoutdpkeys --query "[0].value" --output tsv
+| Setting | Player | API and Admin |
+|---|---|---|
+| `SATURDAY_SCOUT_DP_PROVIDER` | `AzureBlob` | `AzureBlob` |
+| `SATURDAY_SCOUT_DP_KEY_BLOB_URI` | Player ring blob URI | Same shared ring blob URI in both apps |
+| `SATURDAY_SCOUT_DP_KEY_VAULT_KEY_ID` | Player versionless key ID | Same shared versionless key ID in both apps |
+| `SATURDAY_SCOUT_DP_APPLICATION_NAME` | `SaturdayScout.Player.v1` | `SaturdayScout.SharedIdentity.v1` |
 
-for app in saturday-scout-api saturday-scout-admin; do
-  az webapp config storage-account add --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" --name "$app" \
-    --custom-id dpkeys --storage-type AzureFiles --account-name saturdayscoutdpkeys \
-    --share-name dpkeys --access-key <key-from-previous-command> --mount-path /mnt/dpkeys
-done
-```
+Assign a system-managed identity to each App Service. Grant each identity `Storage Blob Data Contributor` only on its ring's container and `Key Vault Crypto User` only on its wrapping key. Configure the vault to use the Azure RBAC permission model; `Key Vault Crypto User` does not work with legacy access policies. Key-level role assignments are supported; the shared Admin/API wrapping key is intentionally a key shared by those two applications. The Player cookie is not consumed by the API; the Admin Identity application cookie must remain compatible between API and Admin. No client secret or storage account key belongs in app settings.
 
-Repoint `SATURDAY_SCOUT_DP_KEYS_PATH` to `/mnt/dpkeys` on both apps if you switch to this. A storage account of this size adds well under $1/month.
+The URI settings are configuration values, not credentials. The Blob URI must be HTTPS, identify a single container and blob, and contain no SAS query. The Key Vault identifier must be HTTPS and versionless (`.../keys/<key-name>`). Retain previous Key Vault key versions: existing Data Protection XML keys refer to the key version that encrypted them, and deleting or disabling that version makes existing cookies unreadable.
+
+The previous `/home/dpkeys` instructions were incorrect for sharing between separate App Service apps. App Service `/home` is persistent for an app and shared by that app's scaled instances, but the content share is dedicated to each app. Giving two apps the same `/home` path does not give them the same key ring. `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true` is still appropriate for Linux custom containers, but it does not create cross-app sharing. See [App Service filesystem behavior](https://learn.microsoft.com/azure/app-service/operating-system-functionality).
+
+Local Development defaults to filesystem storage and does not contact Azure or require Azure credentials. Set `SATURDAY_SCOUT_DP_KEYS_PATH` to an absolute directory when a specific location is needed; use one shared directory for API and Admin, and a separate directory for Player. To explicitly exercise Azure locally, set `SATURDAY_SCOUT_DP_PROVIDER=AzureBlob` and authenticate through the Azure CLI or developer tooling; all Blob and Key Vault settings are then mandatory.
+
+### Data Protection operational validation
+
+Before enabling public traffic, verify each managed identity's scoped access, start each app, protect/unprotect a test payload across service-provider recreation, and verify that Admin can validate its cookie through the API while Player uses only its own ring. Restart and redeploy each host and repeat the checks. Test a missing Blob permission and a disabled/missing Key Vault key version in a non-production environment; the app must fail the operation/readiness path without creating another key ring. Do not include key material, full URIs, Azure exception details, or credentials in health responses. Liveness remains independent of Blob and Key Vault. Readiness performs no Key Vault operation per request.
 
 ## Deploy the code
 
@@ -146,4 +160,4 @@ az webapp deploy --resource-group "$SATURDAY_SCOUT_AZ_RESOURCE_GROUP" --name sat
   --src-path ./publish/admin.zip --type zip
 ```
 
-Apply pending migrations (`database.md`) before deploying code that depends on them, and never let the application apply migrations itself at startup. After the first deploy, confirm both apps start cleanly with `az webapp log tail` — the Admin app fails fast at startup if `SATURDAY_SCOUT_DB_CONNECTION`, `SATURDAY_SCOUT_DP_KEYS_PATH`, or `SATURDAY_SCOUT_PUBLIC_ORIGIN` is missing or invalid outside Development, so a clean failure here means a missing setting, not a code bug.
+Apply pending migrations (`database.md`) before deploying code that depends on them, and never let the application apply migrations itself at startup. After deployment, confirm all hosts start cleanly with `az webapp log tail`. Outside Development, startup requires the database connection, valid Azure Data Protection provider settings, and each host's correct application name; Admin also requires `SATURDAY_SCOUT_PUBLIC_ORIGIN`.

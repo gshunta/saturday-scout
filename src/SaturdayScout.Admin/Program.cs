@@ -16,7 +16,7 @@ var bootstrapRequested = args.Length > 0 && args[0] == "bootstrap-admin";
 var developmentPlayerRequested = args.Length > 0 && args[0] == "provision-dev-player";
 var developmentQaLeagueRequested = args.Length > 0 && args[0] == "provision-dev-qa-league";
 var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested || developmentQaLeagueRequested ? [] : args);
-builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment, ScoutDataProtectionRing.AdminApi);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 builder.Services.AddScoped<IAdminScoutService, AdminScoutStore>();

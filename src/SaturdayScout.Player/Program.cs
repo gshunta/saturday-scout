@@ -9,7 +9,8 @@ using SaturdayScout.Player.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 
-ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment);
+ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment,
+    ScoutDataProtectionRing.Player);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 var ambiguousWriteFault = DevelopmentAmbiguousWriteFault.FromConfiguration(

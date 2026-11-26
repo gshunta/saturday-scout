@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -42,6 +43,15 @@ public sealed class PlayerAuthenticationBoundaryTests
         Assert.Equal(Microsoft.AspNetCore.Http.SameSiteMode.Lax, options.Cookie.SameSite);
         Assert.Equal(TimeSpan.FromMinutes(480), options.ExpireTimeSpan);
         Assert.True(options.SlidingExpiration);
+    }
+
+    [Fact]
+    public void PlayerHostUsesItsDedicatedDataProtectionApplicationName()
+    {
+        using var factory = CreateFactory();
+        var options = factory.Services.GetRequiredService<IOptions<DataProtectionOptions>>().Value;
+
+        Assert.Equal(ScoutIdentityServices.PlayerDataProtectionApplicationName, options.ApplicationDiscriminator);
     }
 
     [Fact]

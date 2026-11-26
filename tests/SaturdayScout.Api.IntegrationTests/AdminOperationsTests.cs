@@ -27,7 +27,7 @@ public sealed class AdminOperationsTests
             await seed.SaveChangesAsync();
         }
 
-        await using var scope = database.Factory("Production").Services.CreateAsyncScope();
+        await using var scope = database.Factory("Testing").Services.CreateAsyncScope();
         var identityUsers = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
         var identityUser = new ApplicationUser
         {
@@ -92,7 +92,7 @@ public sealed class AdminOperationsTests
             await seed.SaveChangesAsync();
         }
 
-        using var factory = database.Factory("Production");
+        using var factory = database.Factory("Testing");
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false
@@ -243,7 +243,7 @@ public sealed class AdminOperationsTests
             await seed.SaveChangesAsync();
         }
 
-        using var factory = database.Factory("Production");
+        using var factory = database.Factory("Testing");
         await using var scope = factory.Services.CreateAsyncScope();
         var admin = scope.ServiceProvider.GetRequiredService<IAdminScoutService>();
 
@@ -340,7 +340,7 @@ public sealed class AdminOperationsTests
             await seed.SaveChangesAsync();
         }
 
-        using var factory = database.Factory("Production");
+        using var factory = database.Factory("Testing");
         await using var scope = factory.Services.CreateAsyncScope();
         var admin = scope.ServiceProvider.GetRequiredService<IAdminScoutService>();
         var current = await admin.GetSlateAsync(slate.Id, default);

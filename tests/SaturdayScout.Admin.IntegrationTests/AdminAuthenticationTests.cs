@@ -8,9 +8,11 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using SaturdayScout.Application;
 using SaturdayScout.Domain;
@@ -103,6 +105,8 @@ public sealed class AdminAuthenticationTests
             var schemes = scope.ServiceProvider.GetRequiredService<IAuthenticationSchemeProvider>();
             Assert.Equal(IdentityConstants.ApplicationScheme,
                 (await schemes.GetDefaultAuthenticateSchemeAsync())?.Name);
+            Assert.Equal(ScoutIdentityServices.DataProtectionApplicationName,
+                factory.Services.GetRequiredService<IOptions<DataProtectionOptions>>().Value.ApplicationDiscriminator);
             Assert.Equal(IdentityConstants.ApplicationScheme,
                 scope.ServiceProvider.GetRequiredService<SignInManager<ApplicationUser>>().AuthenticationScheme);
             Assert.Null(await schemes.GetSchemeAsync("SaturdayScout.Player"));
@@ -211,13 +215,13 @@ public sealed class AdminAuthenticationTests
     }
 
     [Fact]
-    public void ProductionRequiresSharedKeyStorage()
+    public void ProductionRequiresConfiguredAzureKeyStorage()
     {
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", "");
+            builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://admin.example.test");
         });
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
@@ -230,7 +234,13 @@ public sealed class AdminAuthenticationTests
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+            builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
+            builder.UseSetting(ScoutDataProtectionRegistration.BlobUriSetting,
+                "https://scoutstorage.blob.core.windows.net/admin-api/ring.xml");
+            builder.UseSetting(ScoutDataProtectionRegistration.KeyVaultKeyIdSetting,
+                "https://scoutvault.vault.azure.net/keys/admin-api-dp");
+            builder.UseSetting(ScoutDataProtectionRegistration.ApplicationNameSetting,
+                ScoutIdentityServices.DataProtectionApplicationName);
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "http://admin.example.test");
         });
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
@@ -466,7 +476,7 @@ public sealed class AdminTestDatabase : IAsyncDisposable
     public WebApplicationFactory<Program> Factory() => new WebApplicationFactory<Program>()
         .WithWebHostBuilder(builder =>
         {
-            builder.UseEnvironment("Production");
+            builder.UseEnvironment("Testing");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", connection);
             builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://localhost");
