@@ -148,7 +148,9 @@ public static class PlayerAssertionAuthentication
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.FromSeconds(20),
                     ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
-                    IssuerSigningKeys = keyRing.All,
+                    // Resolve only the key identified by the signed JWT's kid. Supplying
+                    // IssuerSigningKeys as a fallback can allow a valid configured key to
+                    // verify a token carrying an unknown or missing kid.
                     IssuerSigningKeyResolver = (_, _, keyId, _) => keyRing.Resolve(keyId),
                     NameClaimType = "sub",
                     RoleClaimType = ClaimTypes.Role

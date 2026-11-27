@@ -5,11 +5,14 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using SaturdayScout.Application;
 using SaturdayScout.Domain;
@@ -83,6 +86,9 @@ public sealed class AdminAuthenticationTests
                 builder.UseEnvironment("Development");
                 builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
                 builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
+                builder.UseSetting("TrustedReverseProxy:Enabled", "true");
+                builder.UseSetting("TrustedReverseProxy:KnownProxies:0", IPAddress.Loopback.ToString());
+                builder.UseSetting("https_port", "443");
             });
 
             using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -99,9 +105,31 @@ public sealed class AdminAuthenticationTests
             var schemes = scope.ServiceProvider.GetRequiredService<IAuthenticationSchemeProvider>();
             Assert.Equal(IdentityConstants.ApplicationScheme,
                 (await schemes.GetDefaultAuthenticateSchemeAsync())?.Name);
+            Assert.Equal(ScoutIdentityServices.DataProtectionApplicationName,
+                factory.Services.GetRequiredService<IOptions<DataProtectionOptions>>().Value.ApplicationDiscriminator);
             Assert.Equal(IdentityConstants.ApplicationScheme,
                 scope.ServiceProvider.GetRequiredService<SignInManager<ApplicationUser>>().AuthenticationScheme);
             Assert.Null(await schemes.GetSchemeAsync("SaturdayScout.Player"));
+
+            var identityCookie = scope.ServiceProvider
+                .GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<CookieAuthenticationOptions>>()
+                .Get(IdentityConstants.ApplicationScheme).Cookie;
+            Assert.Equal("__Host-SaturdayScout", identityCookie.Name);
+            Assert.Equal("/", identityCookie.Path);
+            Assert.Null(identityCookie.Domain);
+            Assert.True(identityCookie.HttpOnly);
+            Assert.Equal(CookieSecurePolicy.Always, identityCookie.SecurePolicy);
+            Assert.Equal(SameSiteMode.Lax, identityCookie.SameSite);
+
+            using var proxyClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("http://localhost"),
+                AllowAutoRedirect = false
+            });
+            proxyClient.DefaultRequestHeaders.Add("X-Forwarded-Proto", "https");
+            using var proxyResponse = await proxyClient.GetAsync("/login");
+            Assert.Equal(HttpStatusCode.OK, proxyResponse.StatusCode);
+            Assert.Null(proxyResponse.Headers.Location);
         }
         finally
         {
@@ -110,13 +138,91 @@ public sealed class AdminAuthenticationTests
     }
 
     [Fact]
-    public void ProductionRequiresSharedKeyStorage()
+    public async Task TrustedForwardedClientIpPartitionsAdminLoginRateLimit()
+    {
+        var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-admin-proxy-test-{Guid.NewGuid():N}");
+        try
+        {
+            using var factory = AdminProxyFactory(keyPath, "127.0.0.1");
+            using var client = CreateProxyClient(factory, IPAddress.Loopback);
+
+            for (var attempt = 0; attempt < 5; attempt++)
+                Assert.Equal(HttpStatusCode.BadRequest,
+                    await AttemptLoginAsync(client, "198.51.100.10"));
+            Assert.Equal(HttpStatusCode.TooManyRequests,
+                await AttemptLoginAsync(client, "198.51.100.10"));
+
+            // A different forwarded client address has a distinct limiter partition
+            // only because the TestServer peer is an explicitly trusted proxy.
+            Assert.Equal(HttpStatusCode.BadRequest,
+                await AttemptLoginAsync(client, "198.51.100.11"));
+        }
+        finally
+        {
+            if (Directory.Exists(keyPath)) Directory.Delete(keyPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UntrustedForwardedClientIpCannotBypassAdminLoginRateLimit()
+    {
+        var keyPath = Path.Combine(Path.GetTempPath(), $"saturday-scout-admin-untrusted-proxy-test-{Guid.NewGuid():N}");
+        try
+        {
+            using var factory = AdminProxyFactory(keyPath, "192.0.2.200");
+            using var client = CreateProxyClient(factory, IPAddress.Loopback);
+
+            for (var attempt = 0; attempt < 5; attempt++)
+                Assert.Equal(HttpStatusCode.BadRequest,
+                    await AttemptLoginAsync(client, $"198.51.100.{attempt + 1}"));
+            Assert.Equal(HttpStatusCode.TooManyRequests,
+                await AttemptLoginAsync(client, "203.0.113.50"));
+        }
+        finally
+        {
+            if (Directory.Exists(keyPath)) Directory.Delete(keyPath, recursive: true);
+        }
+    }
+
+    private static WebApplicationFactory<Program> AdminProxyFactory(string keyPath, string trustedProxy) =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
+            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
+            builder.UseSetting("TrustedReverseProxy:Enabled", "true");
+            builder.UseSetting("TrustedReverseProxy:KnownProxies:0", trustedProxy);
+        });
+
+    private static HttpClient CreateProxyClient(WebApplicationFactory<Program> factory, IPAddress remoteIp) =>
+        new(factory.Server.CreateHandler(context => context.Connection.RemoteIpAddress = remoteIp))
+        {
+            BaseAddress = new Uri("https://localhost")
+        };
+
+    private static async Task<HttpStatusCode> AttemptLoginAsync(HttpClient client, string forwardedFor)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/login")
+        {
+            Content = new FormUrlEncodedContent([
+                new KeyValuePair<string, string>("email", "nobody@example.test"),
+                new KeyValuePair<string, string>("password", "not-a-password")
+            ])
+        };
+        request.Headers.Add("X-Forwarded-For", forwardedFor);
+        using var response = await client.SendAsync(request);
+        return response.StatusCode;
+    }
+
+    [Fact]
+    public void ProductionRequiresConfiguredAzureKeyStorage()
     {
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", "");
+            builder.UseSetting("AllowedHosts", "localhost;admin.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
+            builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://admin.example.test");
         });
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
@@ -128,9 +234,36 @@ public sealed class AdminAuthenticationTests
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-            builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", Path.GetTempPath());
+            builder.UseSetting("AllowedHosts", "localhost;admin.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
+            builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
+            builder.UseSetting(ScoutDataProtectionRegistration.BlobUriSetting,
+                "https://scoutstorage.blob.core.windows.net/admin-api/ring.xml");
+            builder.UseSetting(ScoutDataProtectionRegistration.KeyVaultKeyIdSetting,
+                "https://scoutvault.vault.azure.net/keys/admin-api-dp");
+            builder.UseSetting(ScoutDataProtectionRegistration.ApplicationNameSetting,
+                ScoutIdentityServices.DataProtectionApplicationName);
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "http://admin.example.test");
+        });
+        Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
+    }
+
+    [Fact]
+    public void ProductionRejectsUserInfoInPublicOrigin()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.UseSetting("AllowedHosts", "localhost;admin.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
+            builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
+            builder.UseSetting(ScoutDataProtectionRegistration.BlobUriSetting,
+                "https://scoutstorage.blob.core.windows.net/admin-api/ring.xml");
+            builder.UseSetting(ScoutDataProtectionRegistration.KeyVaultKeyIdSetting,
+                "https://scoutvault.vault.azure.net/keys/admin-api-dp");
+            builder.UseSetting(ScoutDataProtectionRegistration.ApplicationNameSetting,
+                ScoutIdentityServices.DataProtectionApplicationName);
+            builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://attacker@admin.example.test");
         });
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
     }
@@ -365,7 +498,7 @@ public sealed class AdminTestDatabase : IAsyncDisposable
     public WebApplicationFactory<Program> Factory() => new WebApplicationFactory<Program>()
         .WithWebHostBuilder(builder =>
         {
-            builder.UseEnvironment("Production");
+            builder.UseEnvironment("Testing");
             builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", connection);
             builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://localhost");

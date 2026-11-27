@@ -54,7 +54,7 @@ public sealed class PlayerAssertionAuthenticationTests
             ["PlayerAssertions:PublicKeys:0:KeyId"] = keyId,
             ["PlayerAssertions:PublicKeys:0:PublicKeyPem"] = signingKey.ExportSubjectPublicKeyInfoPem()
         };
-        using var factory = database.Factory("Production", settings);
+        using var factory = database.Factory("Testing", settings);
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();

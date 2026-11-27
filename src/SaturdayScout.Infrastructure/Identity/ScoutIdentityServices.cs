@@ -1,13 +1,13 @@
 using System.Globalization;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Persistence;
 
 namespace SaturdayScout.Infrastructure.Identity;
@@ -15,32 +15,18 @@ namespace SaturdayScout.Infrastructure.Identity;
 public static class ScoutIdentityServices
 {
     public const string DataProtectionApplicationName = "SaturdayScout.SharedIdentity.v1";
+    public const string PlayerDataProtectionApplicationName = "SaturdayScout.Player.v1";
     public const string CookieName = "__Host-SaturdayScout";
     public const string DisabledClaim = "saturday_scout:disabled";
     public const string AuthenticationTimeClaim = "auth_time";
     public const string MfaClaim = "amr";
 
     public static IServiceCollection AddScoutIdentity(this IServiceCollection services,
-        IConfiguration configuration, IHostEnvironment environment)
+        IConfiguration configuration, IHostEnvironment environment, ScoutDataProtectionRing dataProtectionRing)
     {
-        var connection = configuration["SATURDAY_SCOUT_DB_CONNECTION"];
-        if (string.IsNullOrWhiteSpace(connection))
-            throw new InvalidOperationException("SATURDAY_SCOUT_DB_CONNECTION is required.");
-        var keyPath = configuration["SATURDAY_SCOUT_DP_KEYS_PATH"];
-        if (string.IsNullOrWhiteSpace(keyPath))
-        {
-            if (!environment.IsDevelopment())
-                throw new InvalidOperationException("SATURDAY_SCOUT_DP_KEYS_PATH is required outside Development.");
-            keyPath = Path.Combine(Path.GetTempPath(), "saturday-scout-dev-keys");
-        }
-        if (!Path.IsPathFullyQualified(keyPath))
-            throw new InvalidOperationException("SATURDAY_SCOUT_DP_KEYS_PATH must be an absolute path.");
-        if (environment.IsDevelopment()) Directory.CreateDirectory(keyPath);
-        else if (!Directory.Exists(keyPath))
-            throw new InvalidOperationException("SATURDAY_SCOUT_DP_KEYS_PATH must name an existing directory.");
-
-        services.AddDataProtection().SetApplicationName(DataProtectionApplicationName)
-            .PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+        var connection = ScoutDatabaseConfiguration.Validate(
+            configuration["SATURDAY_SCOUT_DB_CONNECTION"], environment);
+        services.AddScoutDataProtection(configuration, environment, dataProtectionRing);
         services.AddDbContext<SaturdayScoutDbContext>(options => options.UseNpgsql(connection));
         services.AddDbContext<ScoutIdentityDbContext>(options => options.UseNpgsql(connection,
             npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "auth")));

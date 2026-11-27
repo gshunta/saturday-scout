@@ -45,7 +45,7 @@ Without `SATURDAY_SCOUT_TEST_ADMIN_CONNECTION`, the database integration test is
 | Azure Database for PostgreSQL Flexible Server | Burstable `Standard_B1ms` (1 vCPU / 2 GiB), single zone, no HA | ~$12 |
 | Storage | 32 GiB | ~$4 |
 | Backup | Locally redundant, 7-day retention (default; free up to 100% of provisioned storage) | $0 |
-| App Service Plan | Basic `B1`, Linux, hosting both `SaturdayScout.Api` and `SaturdayScout.Admin` as separate sites on one plan | ~$13 |
+| App Service Plan | Basic `B1`, Linux, hosting Player, API, and Admin as separate sites on one plan | ~$13 |
 | **Total** | | **~$29/month** |
 
 Do not enable zone-redundant high availability (`--zonal-resiliency Enabled`) or geo-redundant backup (`--geo-redundant-backup Enabled`): HA bills a minimum of 8 vCores regardless of the configured tier, and geo-redundant backup doubles backup storage cost. Neither is needed for a friends-league app's availability requirements. Provisioning through the Azure portal instead of the commands below defaults to the General Purpose tier, which costs roughly 8–10x as much for this workload — use the CLI or explicitly select Burstable in the portal.
@@ -54,7 +54,7 @@ Do not enable zone-redundant high availability (`--zonal-resiliency Enabled`) or
 
 ```bash
 export SATURDAY_SCOUT_AZ_RESOURCE_GROUP=saturday-scout-prod
-export SATURDAY_SCOUT_AZ_LOCATION=eastus
+export SATURDAY_SCOUT_AZ_LOCATION=centralus
 export SATURDAY_SCOUT_DB_SERVER=saturday-scout-db
 export SATURDAY_SCOUT_DB_PASSWORD='choose-a-strong-password'   # set in your shell only; never commit it
 
@@ -110,7 +110,7 @@ A Basic-tier App Service plan's outbound IPs are shared infrastructure and can c
 Follow the same backup-first discipline used for the Identity migration (see `identity-migration-review.md`): take a `pg_dump -Fc` backup, verify it with `pg_restore -l`, and restore it to a disposable database to confirm before trusting the production run. With the operator firewall rule above in place:
 
 ```bash
-export SATURDAY_SCOUT_DB_CONNECTION="Host=${SATURDAY_SCOUT_DB_SERVER}.postgres.database.azure.com;Port=5432;Database=saturday_scout;Username=saturday_scout_admin;Password=${SATURDAY_SCOUT_DB_PASSWORD};Ssl Mode=Require"
+export SATURDAY_SCOUT_DB_CONNECTION="Host=${SATURDAY_SCOUT_DB_SERVER}.postgres.database.azure.com;Port=5432;Database=saturday_scout;Username=saturday_scout_admin;Password=${SATURDAY_SCOUT_DB_PASSWORD};Ssl Mode=VerifyFull"
 
 dotnet build -m:1 /nodeReuse:false
 dotnet ef database update --no-build --project src/SaturdayScout.Infrastructure --startup-project src/SaturdayScout.Api
@@ -118,4 +118,4 @@ dotnet ef database update --no-build --context ScoutIdentityDbContext \
   --project src/SaturdayScout.Infrastructure --startup-project src/SaturdayScout.Api
 ```
 
-This is the same connection string set as the `SATURDAY_SCOUT_DB_CONNECTION` App Service setting in `deployment.md` — `Ssl Mode=Require` is mandatory, since Flexible Server rejects unencrypted connections. Never run migrations automatically at application startup, and never widen the Postgres firewall beyond the App Service outbound IPs and a temporary operator rule to do this.
+This connection string must use `Ssl Mode=VerifyFull`, which is enforced by application startup outside Development and Testing. It encrypts the connection and verifies server identity; `Require` encrypts but does not validate the server certificate/hostname. For App Service, store the complete connection string as a Key Vault secret and use a Key Vault reference as the `SATURDAY_SCOUT_DB_CONNECTION` app setting. Never run migrations automatically at application startup, and never widen the Postgres firewall beyond the App Service outbound IPs and a temporary operator rule to do this.

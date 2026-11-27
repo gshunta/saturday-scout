@@ -2,13 +2,19 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.FileProviders;
 using SaturdayScout.Infrastructure;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Player;
 using SaturdayScout.Player.Components;
 
 var builder = WebApplication.CreateBuilder(args);
+ScoutHostingEnvironmentGuard.Validate(builder.Environment, builder.Configuration);
+ScoutHostConfiguration.ValidateAllowedHosts(builder.Configuration, builder.Environment);
 
-ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment);
+ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment,
+    ScoutDataProtectionRing.Player);
+builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
+builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 var ambiguousWriteFault = DevelopmentAmbiguousWriteFault.FromConfiguration(
     builder.Environment.IsDevelopment(),
     builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"],
@@ -27,18 +33,13 @@ builder.Services.Configure<PlayerCookieOptions>(builder.Configuration.GetSection
 builder.Services.Configure<PlayerApiAssertionOptions>(builder.Configuration.GetSection(PlayerApiAssertionOptions.SectionName));
 var assertionOptions = builder.Configuration.GetSection(PlayerApiAssertionOptions.SectionName).Get<PlayerApiAssertionOptions>() ?? new();
 var apiOriginText = builder.Configuration[$"{PlayerHostOptions.SectionName}:ApiOrigin"];
-if (!builder.Environment.IsDevelopment())
+if (!builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
 {
-    if (!Uri.TryCreate(apiOriginText, UriKind.Absolute, out var apiOrigin) || apiOrigin.Scheme != Uri.UriSchemeHttps ||
-        !string.IsNullOrEmpty(apiOrigin.UserInfo) ||
-        apiOrigin.AbsolutePath != "/" || !string.IsNullOrEmpty(apiOrigin.Query) || !string.IsNullOrEmpty(apiOrigin.Fragment))
-        throw new InvalidOperationException("Player:ApiOrigin must be an HTTPS origin outside Development.");
-    if (string.IsNullOrWhiteSpace(assertionOptions.Issuer) || string.IsNullOrWhiteSpace(assertionOptions.Audience) ||
-        string.IsNullOrWhiteSpace(assertionOptions.ClientId) || string.IsNullOrWhiteSpace(assertionOptions.KeyId) ||
-        !Path.IsPathFullyQualified(assertionOptions.PrivateKeyPath) || !File.Exists(assertionOptions.PrivateKeyPath) ||
-        assertionOptions.TokenLifetimeSeconds is < 30 or > 180)
-        throw new InvalidOperationException("Player API assertion signing configuration is required outside Development.");
-    PlayerApiAssertionIssuer.ValidatePrivateKeyFile(assertionOptions.PrivateKeyPath);
+    PlayerApiAssertionConfiguration.ValidateProduction(assertionOptions, apiOriginText);
+}
+else if (builder.Environment.IsEnvironment("Testing"))
+{
+    PlayerApiAssertionConfiguration.ValidateTesting(assertionOptions, apiOriginText);
 }
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IPlayerApiAssertionIssuer, PlayerApiAssertionIssuer>();
@@ -92,9 +93,11 @@ builder.Services.AddAuthorization(options => options.AddPolicy("Player",
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<AuthenticationStateProvider, PlayerRevalidatingAuthenticationStateProvider>();
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
+builder.Services.AddPlayerAuthRateLimiting(builder.Configuration);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 var app = builder.Build();
+app.UseTrustedReverseProxyForwarding();
 if (ambiguousWriteFault.IsArmed)
     app.Logger.LogWarning("Development ambiguous-write simulation armed for one {Operation} request. Configured QA player, league, and slate restrictions are active.",
         builder.Configuration["SATURDAY_SCOUT_DEV_AMBIGUOUS_WRITE"]);
@@ -128,9 +131,15 @@ if (File.Exists(reactEntryPoint))
         }
     });
 }
+// Endpoint routing is implicit at the start of the WebApplication pipeline, so endpoint
+// rate-limit metadata is available here. This runs after trusted forwarded-header
+// processing (client IP) and before authentication, so a rejected sign-in attempt never
+// reaches cookie authentication, antiforgery validation, or the login handler.
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
+app.MapScoutHealthEndpoints();
 app.MapPlayerAuthEndpoints();
 app.MapPlayerBffEndpoints();
 app.MapStaticAssets();

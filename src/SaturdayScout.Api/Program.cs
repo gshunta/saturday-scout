@@ -6,10 +6,13 @@ using Microsoft.AspNetCore.Antiforgery;
 using SaturdayScout.Api;
 using SaturdayScout.Application;
 using SaturdayScout.Infrastructure;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+ScoutHostingEnvironmentGuard.Validate(builder.Environment, builder.Configuration);
+ScoutHostConfiguration.ValidateAllowedHosts(builder.Configuration, builder.Environment);
 builder.Services.AddOpenApi("v1", options => options.AddDocumentTransformer((document, _, _) =>
 {
     document.Info.Title = "Saturday Scout API";
@@ -19,7 +22,9 @@ builder.Services.AddOpenApi("v1", options => options.AddDocumentTransformer((doc
 }));
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ScoutExceptionHandler>();
-builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment);
+builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment, ScoutDataProtectionRing.AdminApi);
+builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
+builder.Services.AddScoutHealthEndpoints(builder.Configuration);
 builder.Services.AddPlayerAssertionAuthentication(builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddScoped<IAuthorizationHandler, LeagueCommissionerAuthorizationHandler>();
@@ -56,6 +61,7 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
+app.UseTrustedReverseProxyForwarding();
 app.UseExceptionHandler();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 else app.UseHsts();
@@ -77,6 +83,7 @@ app.Use(async (context, next) =>
 });
 app.UseAntiforgery();
 app.UseAuthorization();
+app.MapScoutHealthEndpoints();
 
 var authApi = app.MapGroup("/api/v1/auth").RequireAuthorization();
 authApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) =>
