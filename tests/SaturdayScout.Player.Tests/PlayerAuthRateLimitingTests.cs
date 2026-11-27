@@ -317,7 +317,7 @@ public sealed class PlayerAuthRateLimitingTests
     {
         await using var database = await PlayerTestDatabase.CreateAsync();
         const string email = "rate-limit-player@example.test";
-        const string password = "correct-horse-battery-staple";
+        const string password = "Correct-horse-battery-staple9";
         await database.CreatePlayerAsync(email, password);
 
         // Lockout: five wrong passwords lock the account; the right password is then refused.

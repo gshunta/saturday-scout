@@ -188,7 +188,7 @@ public sealed class AdminAuthenticationTests
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Development");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
             builder.UseSetting("SATURDAY_SCOUT_DP_KEYS_PATH", keyPath);
             builder.UseSetting("TrustedReverseProxy:Enabled", "true");
             builder.UseSetting("TrustedReverseProxy:KnownProxies:0", trustedProxy);
@@ -220,7 +220,8 @@ public sealed class AdminAuthenticationTests
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("AllowedHosts", "localhost;admin.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
             builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://admin.example.test");
         });
@@ -233,7 +234,8 @@ public sealed class AdminAuthenticationTests
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("AllowedHosts", "localhost;admin.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
             builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
             builder.UseSetting(ScoutDataProtectionRegistration.BlobUriSetting,
                 "https://scoutstorage.blob.core.windows.net/admin-api/ring.xml");
@@ -242,6 +244,26 @@ public sealed class AdminAuthenticationTests
             builder.UseSetting(ScoutDataProtectionRegistration.ApplicationNameSetting,
                 ScoutIdentityServices.DataProtectionApplicationName);
             builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "http://admin.example.test");
+        });
+        Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
+    }
+
+    [Fact]
+    public void ProductionRejectsUserInfoInPublicOrigin()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.UseSetting("AllowedHosts", "localhost;admin.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
+            builder.UseSetting(ScoutDataProtectionRegistration.ProviderSetting, "AzureBlob");
+            builder.UseSetting(ScoutDataProtectionRegistration.BlobUriSetting,
+                "https://scoutstorage.blob.core.windows.net/admin-api/ring.xml");
+            builder.UseSetting(ScoutDataProtectionRegistration.KeyVaultKeyIdSetting,
+                "https://scoutvault.vault.azure.net/keys/admin-api-dp");
+            builder.UseSetting(ScoutDataProtectionRegistration.ApplicationNameSetting,
+                ScoutIdentityServices.DataProtectionApplicationName);
+            builder.UseSetting("SATURDAY_SCOUT_PUBLIC_ORIGIN", "https://attacker@admin.example.test");
         });
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
     }

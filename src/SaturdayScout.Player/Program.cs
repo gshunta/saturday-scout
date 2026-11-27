@@ -8,6 +8,8 @@ using SaturdayScout.Player;
 using SaturdayScout.Player.Components;
 
 var builder = WebApplication.CreateBuilder(args);
+ScoutHostingEnvironmentGuard.Validate(builder.Environment, builder.Configuration);
+ScoutHostConfiguration.ValidateAllowedHosts(builder.Configuration, builder.Environment);
 
 ScoutIdentityServices.AddScoutIdentity(builder.Services, builder.Configuration, builder.Environment,
     ScoutDataProtectionRing.Player);
@@ -31,18 +33,13 @@ builder.Services.Configure<PlayerCookieOptions>(builder.Configuration.GetSection
 builder.Services.Configure<PlayerApiAssertionOptions>(builder.Configuration.GetSection(PlayerApiAssertionOptions.SectionName));
 var assertionOptions = builder.Configuration.GetSection(PlayerApiAssertionOptions.SectionName).Get<PlayerApiAssertionOptions>() ?? new();
 var apiOriginText = builder.Configuration[$"{PlayerHostOptions.SectionName}:ApiOrigin"];
-if (!builder.Environment.IsDevelopment())
+if (!builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
 {
-    if (!Uri.TryCreate(apiOriginText, UriKind.Absolute, out var apiOrigin) || apiOrigin.Scheme != Uri.UriSchemeHttps ||
-        !string.IsNullOrEmpty(apiOrigin.UserInfo) ||
-        apiOrigin.AbsolutePath != "/" || !string.IsNullOrEmpty(apiOrigin.Query) || !string.IsNullOrEmpty(apiOrigin.Fragment))
-        throw new InvalidOperationException("Player:ApiOrigin must be an HTTPS origin outside Development.");
-    if (string.IsNullOrWhiteSpace(assertionOptions.Issuer) || string.IsNullOrWhiteSpace(assertionOptions.Audience) ||
-        string.IsNullOrWhiteSpace(assertionOptions.ClientId) || string.IsNullOrWhiteSpace(assertionOptions.KeyId) ||
-        !Path.IsPathFullyQualified(assertionOptions.PrivateKeyPath) || !File.Exists(assertionOptions.PrivateKeyPath) ||
-        assertionOptions.TokenLifetimeSeconds is < 30 or > 180)
-        throw new InvalidOperationException("Player API assertion signing configuration is required outside Development.");
-    PlayerApiAssertionIssuer.ValidatePrivateKeyFile(assertionOptions.PrivateKeyPath);
+    PlayerApiAssertionConfiguration.ValidateProduction(assertionOptions, apiOriginText);
+}
+else if (builder.Environment.IsEnvironment("Testing"))
+{
+    PlayerApiAssertionConfiguration.ValidateTesting(assertionOptions, apiOriginText);
 }
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IPlayerApiAssertionIssuer, PlayerApiAssertionIssuer>();

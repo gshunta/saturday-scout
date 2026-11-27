@@ -104,7 +104,8 @@ public sealed class PlayerAssertionPrevalidationTests
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("AllowedHosts", "localhost;api.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
             ConfigureProductionDataProtection(builder, keyPath);
             builder.UseSetting("PlayerAssertions:Issuer", "SaturdayScout.Player");
             builder.UseSetting("PlayerAssertions:Audience", "SaturdayScout.Api");
@@ -133,10 +134,14 @@ public sealed class PlayerAssertionPrevalidationTests
         client.DefaultRequestHeaders.Authorization = new("Bearer", CreateToken(trustedKey, keyId, 120,
             issuer: "untrusted-player"));
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new("Bearer", CreateToken(trustedKey, "unknown-key-id", 120));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new("Bearer", CreateToken(trustedKey, null, 120));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
         Directory.Delete(keyPath, recursive: true);
     }
 
-    private static string CreateToken(RSA rsa, string keyId, int expiresInSeconds,
+    private static string CreateToken(RSA rsa, string? keyId, int expiresInSeconds,
         string clientId = "saturday-scout-player", string audience = "SaturdayScout.Api",
         string issuer = "SaturdayScout.Player")
     {

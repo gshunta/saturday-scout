@@ -14,7 +14,6 @@ public interface IPlayerApiAssertionIssuer
 
 public sealed class PlayerApiAssertionIssuer : IPlayerApiAssertionIssuer, IDisposable
 {
-    private const int MinimumRsaKeySize = 3072;
     private readonly PlayerApiAssertionOptions _options;
     private readonly RSA _privateKey;
 
@@ -23,32 +22,23 @@ public sealed class PlayerApiAssertionIssuer : IPlayerApiAssertionIssuer, IDispo
         _options = options.Value;
         if (string.IsNullOrWhiteSpace(_options.Issuer) || string.IsNullOrWhiteSpace(_options.Audience) ||
             string.IsNullOrWhiteSpace(_options.ClientId) || string.IsNullOrWhiteSpace(_options.KeyId) ||
-            !Path.IsPathFullyQualified(_options.PrivateKeyPath) || _options.TokenLifetimeSeconds is < 30 or > 180)
+            (string.IsNullOrWhiteSpace(_options.PrivateKeyPem) && !Path.IsPathFullyQualified(_options.PrivateKeyPath)) ||
+            _options.TokenLifetimeSeconds is < 30 or > 180)
             throw new InvalidOperationException("Player API assertion configuration is incomplete or invalid.");
 
-        _privateKey = RSA.Create();
-        try
-        {
-            ImportAndValidatePrivateKey(_privateKey, _options.PrivateKeyPath);
-        }
-        catch
-        {
-            _privateKey.Dispose();
-            throw;
-        }
+        _privateKey = !string.IsNullOrWhiteSpace(_options.PrivateKeyPem)
+            ? PlayerApiSigningKey.LoadFromPem(_options.PrivateKeyPem)
+            : PlayerApiSigningKey.LoadFromFile(_options.PrivateKeyPath);
     }
 
     public static void ValidatePrivateKeyFile(string path)
     {
-        using var key = RSA.Create();
-        ImportAndValidatePrivateKey(key, path);
+        using var key = PlayerApiSigningKey.LoadFromFile(path);
     }
 
-    private static void ImportAndValidatePrivateKey(RSA key, string path)
+    public static void ValidatePrivateKeyPem(string? pem)
     {
-        key.ImportFromPem(File.ReadAllText(path));
-        if (key.KeySize < MinimumRsaKeySize)
-            throw new InvalidOperationException("The Player API assertion RSA key must be at least 3072 bits.");
+        using var key = PlayerApiSigningKey.LoadFromPem(pem);
     }
 
     public string Issue(ClaimsPrincipal player)

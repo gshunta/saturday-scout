@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using SaturdayScout.Infrastructure.Hosting;
 using SaturdayScout.Infrastructure.Persistence;
 
 namespace SaturdayScout.Infrastructure.Identity;
@@ -23,9 +24,8 @@ public static class ScoutIdentityServices
     public static IServiceCollection AddScoutIdentity(this IServiceCollection services,
         IConfiguration configuration, IHostEnvironment environment, ScoutDataProtectionRing dataProtectionRing)
     {
-        var connection = configuration["SATURDAY_SCOUT_DB_CONNECTION"];
-        if (string.IsNullOrWhiteSpace(connection))
-            throw new InvalidOperationException("SATURDAY_SCOUT_DB_CONNECTION is required.");
+        var connection = ScoutDatabaseConfiguration.Validate(
+            configuration["SATURDAY_SCOUT_DB_CONNECTION"], environment);
         services.AddScoutDataProtection(configuration, environment, dataProtectionRing);
         services.AddDbContext<SaturdayScoutDbContext>(options => options.UseNpgsql(connection));
         services.AddDbContext<ScoutIdentityDbContext>(options => options.UseNpgsql(connection,

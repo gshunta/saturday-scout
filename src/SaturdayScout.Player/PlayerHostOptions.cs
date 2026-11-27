@@ -23,5 +23,6 @@ public sealed class PlayerApiAssertionOptions
     public string ClientId { get; set; } = "saturday-scout-player";
     public string KeyId { get; set; } = "";
     public string PrivateKeyPath { get; set; } = "";
+    public string PrivateKeyPem { get; set; } = "";
     public int TokenLifetimeSeconds { get; set; } = 120;
 }

@@ -254,7 +254,8 @@ public sealed class ApiFlowTests
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            builder.UseSetting("AllowedHosts", "localhost;api.example.test");
+            builder.UseSetting("SATURDAY_SCOUT_DB_CONNECTION", "Host=127.0.0.1;Database=unused;Username=unused;Password=unused;Ssl Mode=VerifyFull");
             ConfigureProductionDataProtection(builder);
             builder.UseSetting("PlayerAssertions:PublicKeys:0:KeyId", "api-policy-test-key");
             builder.UseSetting("PlayerAssertions:PublicKeys:0:PublicKeyPem", apiKey.ExportSubjectPublicKeyInfoPem());

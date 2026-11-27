@@ -16,6 +16,8 @@ var bootstrapRequested = args.Length > 0 && args[0] == "bootstrap-admin";
 var developmentPlayerRequested = args.Length > 0 && args[0] == "provision-dev-player";
 var developmentQaLeagueRequested = args.Length > 0 && args[0] == "provision-dev-qa-league";
 var builder = WebApplication.CreateBuilder(bootstrapRequested || developmentPlayerRequested || developmentQaLeagueRequested ? [] : args);
+ScoutHostingEnvironmentGuard.Validate(builder.Environment, builder.Configuration);
+ScoutHostConfiguration.ValidateAllowedHosts(builder.Configuration, builder.Environment);
 builder.Services.AddScoutIdentity(builder.Configuration, builder.Environment, ScoutDataProtectionRing.AdminApi);
 builder.Services.AddTrustedReverseProxyForwarding(builder.Configuration, builder.Environment);
 builder.Services.AddScoutHealthEndpoints(builder.Configuration);
@@ -115,7 +117,8 @@ if (!builder.Environment.IsDevelopment())
 {
     var publicOrigin = builder.Configuration["SATURDAY_SCOUT_PUBLIC_ORIGIN"];
     if (!Uri.TryCreate(publicOrigin, UriKind.Absolute, out var origin) || origin.Scheme != Uri.UriSchemeHttps ||
-        origin.AbsolutePath != "/" || !string.IsNullOrEmpty(origin.Query) || !string.IsNullOrEmpty(origin.Fragment))
+        !string.IsNullOrEmpty(origin.UserInfo) || origin.AbsolutePath != "/" ||
+        !string.IsNullOrEmpty(origin.Query) || !string.IsNullOrEmpty(origin.Fragment))
         throw new InvalidOperationException("SATURDAY_SCOUT_PUBLIC_ORIGIN must be an HTTPS origin outside Development.");
 }
 
@@ -133,14 +136,17 @@ builder.Services.AddAuthorization(options =>
         .AddRequirements(new MfaEnrollmentRequirement()));
 });
 builder.Services.AddAntiforgery();
+builder.Services.AddSingleton<AdminAuthRateLimitPartitions>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
-        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        context.RequestServices.GetRequiredService<AdminAuthRateLimitPartitions>()
+            .GetPartitionKey("login", context.Connection.RemoteIpAddress),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("mfa", context => RateLimitPartition.GetFixedWindowLimiter(
-        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        context.RequestServices.GetRequiredService<AdminAuthRateLimitPartitions>()
+            .GetPartitionKey("mfa", context.Connection.RemoteIpAddress),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 

@@ -11,6 +11,8 @@ using SaturdayScout.Infrastructure.Identity;
 using SaturdayScout.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+ScoutHostingEnvironmentGuard.Validate(builder.Environment, builder.Configuration);
+ScoutHostConfiguration.ValidateAllowedHosts(builder.Configuration, builder.Environment);
 builder.Services.AddOpenApi("v1", options => options.AddDocumentTransformer((document, _, _) =>
 {
     document.Info.Title = "Saturday Scout API";
